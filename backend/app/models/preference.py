@@ -25,7 +25,17 @@ class PreferenceProfile(Base, TimestampMixin):
     preferred_roles: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     preferred_locations: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     preferred_skills: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    preferred_employment_types: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    preferred_workplace_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    excluded_keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    required_roles: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    required_locations: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 
+    require_graduation_year_match: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     minimum_match_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
