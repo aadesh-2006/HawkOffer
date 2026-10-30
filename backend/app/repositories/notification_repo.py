@@ -60,12 +60,12 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         return count or 0
 
     async def mark_as_read(self, notification_id: int) -> Notification | None:
-        """Transition notification to READ with read_at timestamp (idempotent)."""
+        """Transition notification from UNREAD to READ with read_at timestamp (idempotent)."""
         notif = await self.get_by_id(notification_id)
         if not notif:
             return None
 
-        if notif.status != NotificationStatus.READ:
+        if notif.status == NotificationStatus.UNREAD:
             notif.status = NotificationStatus.READ
             notif.read_at = datetime.now(UTC)
             self.session.add(notif)
@@ -74,12 +74,12 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         return notif
 
     async def mark_as_unread(self, notification_id: int) -> Notification | None:
-        """Transition notification back to UNREAD, resetting read_at timestamp (idempotent)."""
+        """Transition notification from READ to UNREAD, resetting read_at timestamp (idempotent)."""
         notif = await self.get_by_id(notification_id)
         if not notif:
             return None
 
-        if notif.status != NotificationStatus.UNREAD:
+        if notif.status == NotificationStatus.READ:
             notif.status = NotificationStatus.UNREAD
             notif.read_at = None
             self.session.add(notif)
@@ -88,12 +88,12 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         return notif
 
     async def dismiss(self, notification_id: int) -> Notification | None:
-        """Transition notification to DISMISSED with dismissed_at timestamp (idempotent)."""
+        """Transition notification from UNREAD/READ to DISMISSED (idempotent)."""
         notif = await self.get_by_id(notification_id)
         if not notif:
             return None
 
-        if notif.status != NotificationStatus.DISMISSED:
+        if notif.status in (NotificationStatus.UNREAD, NotificationStatus.READ):
             notif.status = NotificationStatus.DISMISSED
             notif.dismissed_at = datetime.now(UTC)
             self.session.add(notif)
@@ -102,13 +102,15 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         return notif
 
     async def restore(self, notification_id: int) -> Notification | None:
-        """Restore a dismissed notification back to READ (if read_at exists) or UNREAD."""
+        """Restore a dismissed notification back to READ (if previously read) or UNREAD."""
         notif = await self.get_by_id(notification_id)
         if not notif:
             return None
 
         if notif.status == NotificationStatus.DISMISSED:
-            notif.status = NotificationStatus.READ if notif.read_at else NotificationStatus.UNREAD
+            notif.status = (
+                NotificationStatus.READ if notif.read_at is not None else NotificationStatus.UNREAD
+            )
             notif.dismissed_at = None
             self.session.add(notif)
             await self.session.flush()
@@ -116,7 +118,7 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         return notif
 
     async def mark_batch_read(self, notification_ids: list[int]) -> int:
-        """Batch transition multiple notifications to READ."""
+        """Batch transition multiple notifications from UNREAD to READ."""
         if not notification_ids:
             return 0
 
@@ -125,7 +127,7 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
             update(Notification)
             .where(
                 Notification.id.in_(notification_ids),
-                Notification.status != NotificationStatus.READ,
+                Notification.status == NotificationStatus.UNREAD,
             )
             .values(status=NotificationStatus.READ, read_at=now)
         )
@@ -144,7 +146,7 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
             update(Notification)
             .where(
                 Notification.id.in_(notification_ids),
-                Notification.status != NotificationStatus.DISMISSED,
+                Notification.status.in_([NotificationStatus.UNREAD, NotificationStatus.READ]),
             )
             .values(status=NotificationStatus.DISMISSED, dismissed_at=now)
         )
@@ -159,15 +161,29 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         profile_id: int | None,
         notification_type: str = NotificationType.JOB_ALERT,
     ) -> Notification | None:
-        """Retrieve existing notification matching (job_id, profile_id, notification_type)."""
+        """Retrieve existing notification matching (job_id, profile_id, notification_type).
+
+        Recognizes legacy 'desktop_toast' records as synonymous with 'job_alert' to prevent
+        duplicate notifications for the same business event.
+        """
+        types_to_match: list[str]
+        if notification_type == NotificationType.JOB_ALERT:
+            types_to_match = [NotificationType.JOB_ALERT, NotificationType.DESKTOP_TOAST]
+        elif notification_type == NotificationType.DESKTOP_TOAST:
+            types_to_match = [NotificationType.DESKTOP_TOAST, NotificationType.JOB_ALERT]
+        else:
+            types_to_match = [notification_type]
+
         query = select(Notification).where(
             Notification.job_id == job_id,
-            Notification.notification_type == notification_type,
+            Notification.notification_type.in_(types_to_match),
         )
         if profile_id is None:
             query = query.where(Notification.profile_id.is_(None))
         else:
             query = query.where(Notification.profile_id == profile_id)
+
+        query = query.order_by(Notification.created_at.desc(), Notification.id.desc())
 
         result = await self.session.execute(query)
         return result.scalars().first()

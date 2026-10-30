@@ -588,3 +588,247 @@ def test_alembic_notification_lifecycle_migration(tmp_path: Path) -> None:
 
     # 6. Re-upgrade to head to verify idempotency
     command.upgrade(cfg, "head")
+
+    # Confirm obsolete null-profile index is absent in head
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA index_list(notifications);")
+    index_names = [row[1] for row in cursor.fetchall()]
+    conn.close()
+    assert "uq_notifications_job_null_profile_type" not in index_names
+
+
+@pytest.mark.asyncio
+async def test_multi_profile_deletion_collision_regression(db_session: AsyncSession) -> None:
+    """Regression test F-01: verify deleting multiple profiles does not collide."""
+    from sqlalchemy import text
+
+    await db_session.execute(text("PRAGMA foreign_keys = ON;"))
+
+    comp_repo = CompanyRepository(db_session)
+    job_repo = JobRepository(db_session)
+    prof_repo = PreferenceProfileRepository(db_session)
+    notif_repo = NotificationRepository(db_session)
+
+    _, job = await _create_test_job(comp_repo, job_repo, "mp_del")
+    p1 = await prof_repo.create(PreferenceProfileCreate(name="Multi Profile 1"))
+    p2 = await prof_repo.create(PreferenceProfileCreate(name="Multi Profile 2"))
+
+    # Both profiles receive notifications for the same job and notification_type
+    n1 = await notif_repo.create(
+        NotificationCreate(
+            job_id=job.id,
+            profile_id=p1.id,
+            notification_type=NotificationType.JOB_ALERT,
+        )
+    )
+    n2 = await notif_repo.create(
+        NotificationCreate(
+            job_id=job.id,
+            profile_id=p2.id,
+            notification_type=NotificationType.JOB_ALERT,
+        )
+    )
+    assert n1.id is not None
+    assert n2.id is not None
+    await db_session.commit()
+
+    # Delete Profile 1: Row 1 cascades to profile_id = NULL
+    p1_entity = await prof_repo.get_by_id(p1.id)
+    assert p1_entity is not None
+    await db_session.delete(p1_entity)
+    await db_session.commit()
+
+    # Delete Profile 2: Row 2 cascades to profile_id = NULL
+    # In pre-F-01 schema, this raised IntegrityError on uq_notifications_job_null_profile_type!
+    p2_entity = await prof_repo.get_by_id(p2.id)
+    assert p2_entity is not None
+    await db_session.delete(p2_entity)
+    await db_session.commit()
+
+    # Refresh and confirm both notifications survive with profile_id = NULL
+    await db_session.refresh(n1)
+    await db_session.refresh(n2)
+    assert n1.profile_id is None
+    assert n2.profile_id is None
+
+
+@pytest.mark.asyncio
+async def test_batch_read_does_not_modify_dismissed_regression(db_session: AsyncSession) -> None:
+    """Regression test F-02: verify mark_batch_read only transitions UNREAD to READ."""
+    comp_repo = CompanyRepository(db_session)
+    job_repo = JobRepository(db_session)
+    notif_repo = NotificationRepository(db_session)
+
+    _, job1 = await _create_test_job(comp_repo, job_repo, "br1")
+    _, job2 = await _create_test_job(comp_repo, job_repo, "br2")
+    _, job3 = await _create_test_job(comp_repo, job_repo, "br3")
+
+    n_unread = await notif_repo.create(NotificationCreate(job_id=job1.id))
+    n_read = await notif_repo.create(NotificationCreate(job_id=job2.id))
+    n_dismissed = await notif_repo.create(NotificationCreate(job_id=job3.id))
+
+    await notif_repo.mark_as_read(n_read.id)
+    await db_session.refresh(n_read)
+    initial_read_at = n_read.read_at
+    assert initial_read_at is not None
+
+    await notif_repo.dismiss(n_dismissed.id)
+    await db_session.refresh(n_dismissed)
+    initial_dismissed_at = n_dismissed.dismissed_at
+    assert initial_dismissed_at is not None
+
+    # Batch read on [UNREAD, READ, DISMISSED]
+    count = await notif_repo.mark_batch_read([n_unread.id, n_read.id, n_dismissed.id])
+    assert count == 1  # Only the UNREAD notification is transitioned
+
+    await db_session.refresh(n_unread)
+    await db_session.refresh(n_read)
+    await db_session.refresh(n_dismissed)
+
+    # UNREAD transitioned to READ
+    assert n_unread.status == NotificationStatus.READ
+    assert n_unread.read_at is not None
+
+    # READ remained READ with original read_at
+    assert n_read.status == NotificationStatus.READ
+    assert n_read.read_at == initial_read_at
+
+    # DISMISSED remained DISMISSED with original dismissed_at (NOT resurrected)
+    assert n_dismissed.status == NotificationStatus.DISMISSED
+    assert n_dismissed.dismissed_at == initial_dismissed_at
+    assert n_dismissed.read_at is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_single_item_lifecycle_transitions_regression(
+    db_session: AsyncSession,
+) -> None:
+    """Regression test F-03: verify strict state transitions leave records unchanged."""
+    comp_repo = CompanyRepository(db_session)
+    job_repo = JobRepository(db_session)
+    notif_repo = NotificationRepository(db_session)
+
+    _, job = await _create_test_job(comp_repo, job_repo, "inv_tr")
+
+    # 1. Calling mark_as_read on DISMISSED must NOT resurrect it
+    n1 = await notif_repo.create(NotificationCreate(job_id=job.id))
+    await notif_repo.dismiss(n1.id)
+    await db_session.refresh(n1)
+    orig_dismissed_at = n1.dismissed_at
+
+    res_read = await notif_repo.mark_as_read(n1.id)
+    assert res_read is not None
+    assert res_read.status == NotificationStatus.DISMISSED
+    assert res_read.dismissed_at == orig_dismissed_at
+    assert res_read.read_at is None
+
+    # 2. Calling mark_as_unread on DISMISSED must NOT resurrect it
+    res_unread = await notif_repo.mark_as_unread(n1.id)
+    assert res_unread is not None
+    assert res_unread.status == NotificationStatus.DISMISSED
+    assert res_unread.dismissed_at == orig_dismissed_at
+
+    # 3. Calling dismiss on already DISMISSED is idempotent and preserves dismissed_at
+    res_dism = await notif_repo.dismiss(n1.id)
+    assert res_dism is not None
+    assert res_dism.status == NotificationStatus.DISMISSED
+    assert res_dism.dismissed_at == orig_dismissed_at
+
+    # 4. Calling mark_as_unread on UNREAD is a no-op
+    n2 = await notif_repo.create(NotificationCreate(job_id=job.id))
+    res_un = await notif_repo.mark_as_unread(n2.id)
+    assert res_un is not None
+    assert res_un.status == NotificationStatus.UNREAD
+    assert res_un.read_at is None
+
+    # 5. Calling restore on UNREAD or READ is a no-op
+    res_rest_un = await notif_repo.restore(n2.id)
+    assert res_rest_un is not None
+    assert res_rest_un.status == NotificationStatus.UNREAD
+
+    await notif_repo.mark_as_read(n2.id)
+    await db_session.refresh(n2)
+    n2_read_at = n2.read_at
+
+    res_rest_rd = await notif_repo.restore(n2.id)
+    assert res_rest_rd is not None
+    assert res_rest_rd.status == NotificationStatus.READ
+    assert res_rest_rd.read_at == n2_read_at
+
+    # 6. Restore from DISMISSED restores to READ if read_at was set
+    await notif_repo.dismiss(n2.id)
+    await db_session.refresh(n2)
+    assert n2.status == NotificationStatus.DISMISSED
+
+    restored = await notif_repo.restore(n2.id)
+    assert restored is not None
+    assert restored.status == NotificationStatus.READ
+    assert restored.read_at == n2_read_at
+    assert restored.dismissed_at is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_notification_deduplication_lookup_regression(
+    db_session: AsyncSession,
+) -> None:
+    """Regression test F-04: verify deduplication lookup recognizes legacy desktop_toast records."""
+    comp_repo = CompanyRepository(db_session)
+    job_repo = JobRepository(db_session)
+    prof_repo = PreferenceProfileRepository(db_session)
+    notif_repo = NotificationRepository(db_session)
+
+    _, job = await _create_test_job(comp_repo, job_repo, "dedup_leg")
+    profile = await prof_repo.create(PreferenceProfileCreate(name="Dedup Leg Profile"))
+
+    # 1. Insert legacy record with notification_type='desktop_toast'
+    legacy_notif = await notif_repo.create(
+        NotificationCreate(
+            job_id=job.id,
+            profile_id=profile.id,
+            notification_type=NotificationType.DESKTOP_TOAST,
+        )
+    )
+
+    # 2. Query with default notification_type=NotificationType.JOB_ALERT ('job_alert')
+    # Must find the existing legacy record!
+    found = await notif_repo.get_by_job_profile_type(
+        job_id=job.id,
+        profile_id=profile.id,
+    )
+    assert found is not None
+    assert found.id == legacy_notif.id
+    assert found.notification_type == NotificationType.DESKTOP_TOAST
+
+    # 3. Query with profile_id=None
+    _, job_null = await _create_test_job(comp_repo, job_repo, "dedup_null")
+    legacy_null = await notif_repo.create(
+        NotificationCreate(
+            job_id=job_null.id,
+            profile_id=None,
+            notification_type=NotificationType.DESKTOP_TOAST,
+        )
+    )
+    found_null = await notif_repo.get_by_job_profile_type(
+        job_id=job_null.id,
+        profile_id=None,
+    )
+    assert found_null is not None
+    assert found_null.id == legacy_null.id
+
+    # 4. Insert canonical record with 'job_alert' and query with 'desktop_toast'
+    _, job_canon = await _create_test_job(comp_repo, job_repo, "dedup_can")
+    canon_notif = await notif_repo.create(
+        NotificationCreate(
+            job_id=job_canon.id,
+            profile_id=profile.id,
+            notification_type=NotificationType.JOB_ALERT,
+        )
+    )
+    found_from_toast = await notif_repo.get_by_job_profile_type(
+        job_id=job_canon.id,
+        profile_id=profile.id,
+        notification_type=NotificationType.DESKTOP_TOAST,
+    )
+    assert found_from_toast is not None
+    assert found_from_toast.id == canon_notif.id
