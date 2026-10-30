@@ -1,0 +1,1 @@
+"""HawkOffer application package."""
