@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +32,8 @@ class Job(Base, TimestampMixin):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     application_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     employment_type: Mapped[str | None] = mapped_column(
@@ -40,6 +43,7 @@ class Job(Base, TimestampMixin):
         String(50), nullable=True
     )  # e.g., 'remote', 'hybrid', 'onsite'
     graduation_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     fingerprint_hash: Mapped[str] = mapped_column(
         String(64), nullable=False
@@ -65,6 +69,15 @@ class Job(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_jobs_company_status", "company_id", "status"),
         Index("ix_jobs_application_url", "application_url"),
+        Index("ix_jobs_external_id", "external_id"),
+        Index(
+            "uq_jobs_company_external_id",
+            "company_id",
+            "external_id",
+            unique=True,
+            sqlite_where=text("external_id IS NOT NULL"),
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
         Index("ix_jobs_status", "status"),
         Index("ix_jobs_first_seen_at", "first_seen_at"),
         Index("ix_jobs_fingerprint_hash", "fingerprint_hash", unique=True),

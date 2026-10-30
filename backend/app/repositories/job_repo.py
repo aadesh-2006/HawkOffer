@@ -23,6 +23,13 @@ class JobRepository(BaseRepository[Job, JobCreate, JobUpdate]):
         )
         return result.scalars().first()
 
+    async def get_by_external_id(self, company_id: int, external_id: str) -> Job | None:
+        """Look up a job by company ID and ATS external identifier."""
+        result = await self.session.execute(
+            select(Job).where(Job.company_id == company_id, Job.external_id == external_id)
+        )
+        return result.scalars().first()
+
     async def get_by_application_url(self, application_url: str) -> Job | None:
         """Look up a job by its application URL."""
         result = await self.session.execute(

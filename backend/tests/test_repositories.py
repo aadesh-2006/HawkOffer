@@ -85,6 +85,7 @@ async def test_job_repository_lookups_and_filtering(db_session: AsyncSession) ->
             company_id=company.id,
             title="Backend Engineer",
             location="Remote",
+            external_id="ext-beta-1",
             application_url=app_url1,
             employment_type="full_time",
             job_type="remote",
@@ -120,6 +121,12 @@ async def test_job_repository_lookups_and_filtering(db_session: AsyncSession) ->
     found_by_url = await job_repo.get_by_application_url(app_url1)
     assert found_by_url is not None
     assert found_by_url.id == job1.id
+
+    # Lookup by external ID
+    found_by_ext = await job_repo.get_by_external_id(company.id, "ext-beta-1")
+    assert found_by_ext is not None
+    assert found_by_ext.id == job1.id
+    assert await job_repo.get_by_external_id(company.id, "nonexistent") is None
 
     # Lookup non-existent
     assert await job_repo.get_by_fingerprint("nonexistent" * 4) is None

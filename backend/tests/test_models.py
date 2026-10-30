@@ -101,6 +101,80 @@ async def test_job_unique_fingerprint_constraint(db_session: AsyncSession) -> No
 
 
 @pytest.mark.asyncio
+async def test_job_unique_company_external_id_constraint(
+    db_session: AsyncSession,
+) -> None:
+    """Verify duplicate (company_id, external_id) raises IntegrityError, while nulls are allowed."""
+    company = Company(name="Acme Corp", career_url="https://acme.com/jobs")
+    db_session.add(company)
+    await db_session.commit()
+    company_id = company.id
+
+    job1 = Job(
+        company_id=company_id,
+        external_id="gh-1234",
+        title="Engineer 1",
+        application_url="https://acme.com/job1",
+        fingerprint_hash="1" * 64,
+        content_hash="c" * 64,
+    )
+    db_session.add(job1)
+    await db_session.commit()
+
+    # Duplicate (company_id, external_id) must raise IntegrityError
+    job2 = Job(
+        company_id=company_id,
+        external_id="gh-1234",
+        title="Engineer 2",
+        application_url="https://acme.com/job2",
+        fingerprint_hash="2" * 64,
+        content_hash="c" * 64,
+    )
+    db_session.add(job2)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    # Same external_id under a DIFFERENT company is allowed
+    company2 = Company(name="Beta Corp", career_url="https://beta.com/jobs")
+    db_session.add(company2)
+    await db_session.commit()
+    company2_id = company2.id
+
+    job_comp2 = Job(
+        company_id=company2_id,
+        external_id="gh-1234",
+        title="Engineer at Beta",
+        application_url="https://beta.com/job1",
+        fingerprint_hash="3" * 64,
+        content_hash="c" * 64,
+    )
+    db_session.add(job_comp2)
+    await db_session.commit()
+
+    # Multiple jobs with external_id=None under the same company are allowed
+    null_job1 = Job(
+        company_id=company_id,
+        external_id=None,
+        title="Null Ext Job 1",
+        application_url="https://acme.com/null1",
+        fingerprint_hash="4" * 64,
+        content_hash="c" * 64,
+    )
+    null_job2 = Job(
+        company_id=company_id,
+        external_id=None,
+        title="Null Ext Job 2",
+        application_url="https://acme.com/null2",
+        fingerprint_hash="5" * 64,
+        content_hash="c" * 64,
+    )
+    db_session.add(null_job1)
+    db_session.add(null_job2)
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
 async def test_foreign_key_enforcement(db_session: AsyncSession) -> None:
     """Verify that referencing non-existent parent foreign key raises IntegrityError."""
     orphaned_job = Job(

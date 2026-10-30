@@ -23,7 +23,7 @@ class MonitoringLog(Base):
     )
     status: Mapped[str] = mapped_column(
         String(50), nullable=False
-    )  # 'SUCCESS', 'FAILED', 'RATE_LIMITED', 'SKIPPED'
+    )  # 'SUCCESS', 'PARTIAL', 'FAILED', 'RATE_LIMITED', 'SKIPPED'
     jobs_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_time_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

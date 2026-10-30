@@ -9,11 +9,14 @@ class JobBase(BaseModel):
     company_id: int
     title: str = Field(..., min_length=1, max_length=255)
     location: str | None = Field(None, max_length=255)
+    department: str | None = Field(None, max_length=255)
+    external_id: str | None = Field(None, max_length=255)
     description: str | None = None
     application_url: str = Field(..., min_length=1, max_length=2048)
     employment_type: str | None = Field(None, max_length=50)
     job_type: str | None = Field(None, max_length=50)
     graduation_year: int | None = Field(None, ge=2000, le=2100)
+    posted_at: datetime | None = None
     status: str = Field(default="NEW", max_length=50)
 
 
@@ -27,11 +30,15 @@ class JobCreate(JobBase):
 class JobUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=255)
     location: str | None = Field(None, max_length=255)
+    department: str | None = Field(None, max_length=255)
+    external_id: str | None = Field(None, max_length=255)
     description: str | None = None
     application_url: str | None = Field(None, min_length=1, max_length=2048)
     employment_type: str | None = Field(None, max_length=50)
     job_type: str | None = Field(None, max_length=50)
     graduation_year: int | None = Field(None, ge=2000, le=2100)
+    posted_at: datetime | None = None
+    fingerprint_hash: str | None = Field(None, min_length=64, max_length=64)
     content_hash: str | None = Field(None, min_length=64, max_length=64)
     status: str | None = Field(None, max_length=50)
     last_seen_at: datetime | None = None
