@@ -277,7 +277,7 @@ async def test_notification_and_log_models(db_session: AsyncSession) -> None:
     notif = Notification(
         job_id=job.id,
         notification_type="desktop_toast",
-        status="PENDING",
+        delivery_status="PENDING",
     )
     log = MonitoringLog(
         company_id=company.id,
@@ -289,7 +289,8 @@ async def test_notification_and_log_models(db_session: AsyncSession) -> None:
     await db_session.commit()
 
     assert notif.id is not None
-    assert notif.status == "PENDING"
+    assert notif.status == "UNREAD"
+    assert notif.delivery_status == "PENDING"
     assert log.id is not None
     assert log.status == "SUCCESS"
     assert log.jobs_found == 5
@@ -471,7 +472,7 @@ async def test_preference_profile_deletion_preserves_notifications(
         job_id=job.id,
         profile_id=profile.id,
         notification_type="desktop_toast",
-        status="DELIVERED",
+        delivery_status="DELIVERED",
     )
     db_session.add(notif)
     await db_session.commit()
@@ -483,4 +484,5 @@ async def test_preference_profile_deletion_preserves_notifications(
     # Refresh notification instance from database
     await db_session.refresh(notif)
     assert notif.profile_id is None
-    assert notif.status == "DELIVERED"
+    assert notif.delivery_status == "DELIVERED"
+    assert notif.status == "UNREAD"

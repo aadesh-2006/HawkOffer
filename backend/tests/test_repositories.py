@@ -241,11 +241,12 @@ async def test_notification_repository(db_session: AsyncSession) -> None:
         NotificationCreate(
             job_id=job.id,
             notification_type="desktop_toast",
-            status="PENDING",
+            delivery_status="PENDING",
         )
     )
     assert notif.id is not None
-    assert notif.status == "PENDING"
+    assert notif.status == "UNREAD"
+    assert notif.delivery_status == "PENDING"
 
     # List pending
     pending = await notif_repo.list_pending()
@@ -255,7 +256,8 @@ async def test_notification_repository(db_session: AsyncSession) -> None:
     # Mark delivered
     delivered = await notif_repo.mark_delivered(notif.id)
     assert delivered is not None
-    assert delivered.status == "DELIVERED"
+    assert delivered.status == "UNREAD"
+    assert delivered.delivery_status == "DELIVERED"
     assert delivered.delivered_at is not None
 
     # Pending should now be empty
