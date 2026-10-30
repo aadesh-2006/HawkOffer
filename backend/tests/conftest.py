@@ -50,15 +50,21 @@ async def test_engine(tmp_path: Path) -> AsyncGenerator[AsyncEngine, None]:
 
 
 @pytest.fixture
-async def db_session(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    """Provide an isolated AsyncSession bound to the temporary engine."""
-    session_factory = async_sessionmaker(
+def session_factory(test_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Provide an isolated async sessionmaker bound to the test engine."""
+    return async_sessionmaker(
         bind=test_engine,
         class_=AsyncSession,
         expire_on_commit=False,
         autoflush=False,
     )
 
+
+@pytest.fixture
+async def db_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncGenerator[AsyncSession, None]:
+    """Provide an isolated AsyncSession bound to the temporary engine."""
     async with session_factory() as session:
         yield session
         await session.rollback()
