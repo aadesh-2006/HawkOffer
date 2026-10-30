@@ -377,8 +377,14 @@ async def test_notification_deduplication_populated_profile(db_session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_notification_deduplication_null_profile(db_session: AsyncSession) -> None:
-    """Regression test: duplicate notifications with NULL profile_id are blocked in SQLite."""
+async def test_notification_allows_multiple_null_profile_notifications(
+    db_session: AsyncSession,
+) -> None:
+    """Verify multiple notifications with NULL profile_id are permitted for the same job.
+
+    This ensures that when multiple profiles alerting on the same job are deleted,
+    their cascading ON DELETE SET NULL does not collide or raise an IntegrityError.
+    """
     company = Company(name="NullProfile Co", career_url="https://nullprofile.com")
     db_session.add(company)
     await db_session.flush()
@@ -398,20 +404,17 @@ async def test_notification_deduplication_null_profile(db_session: AsyncSession)
         profile_id=None,
         notification_type="desktop_toast",
     )
-    db_session.add(notif1)
-    await db_session.commit()
-
-    # Attempt inserting duplicate with NULL profile_id
     notif2 = Notification(
         job_id=job.id,
         profile_id=None,
         notification_type="desktop_toast",
     )
-    db_session.add(notif2)
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
+    db_session.add_all([notif1, notif2])
+    await db_session.commit()
 
-    await db_session.rollback()
+    assert notif1.id is not None
+    assert notif2.id is not None
+    assert notif1.id != notif2.id
 
 
 @pytest.mark.asyncio
