@@ -17,6 +17,8 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "platformdirs>=4.3.6",
+    "httpx>=0.28.0",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +28,6 @@ dev = [
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
-    "httpx>=0.28.0",
 ]
 
 [build-system]
@@ -49,6 +50,7 @@ addopts = "-v --strict-markers"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["alembic"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM"]
