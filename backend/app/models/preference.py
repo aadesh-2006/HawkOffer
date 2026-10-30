@@ -40,6 +40,7 @@ class PreferenceProfile(Base, TimestampMixin):
         Boolean, default=False, nullable=False
     )
     minimum_match_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Relationships

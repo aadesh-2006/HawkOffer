@@ -4,14 +4,30 @@ from app.models.company import Company
 from app.models.job import Job
 from app.models.log import MonitoringLog
 from app.models.notification import Notification
+from app.models.outbox import (
+    BacklogStatus,
+    JobDiscoveryOutbox,
+    NotificationBacklog,
+    OutboxStatus,
+    ProfileReevaluationTask,
+    ReevaluationStatus,
+    SystemDrainState,
+)
 from app.models.preference import PreferenceProfile
 from app.models.scan_state import CompanyScanState
 
 __all__ = [
+    "BacklogStatus",
     "Company",
     "CompanyScanState",
     "Job",
+    "JobDiscoveryOutbox",
     "MonitoringLog",
     "Notification",
+    "NotificationBacklog",
+    "OutboxStatus",
     "PreferenceProfile",
+    "ProfileReevaluationTask",
+    "ReevaluationStatus",
+    "SystemDrainState",
 ]
