@@ -10,6 +10,7 @@ from app.database.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.models.job import Job
     from app.models.log import MonitoringLog
+    from app.models.scan_state import CompanyScanState
 
 
 class Company(Base, TimestampMixin):
@@ -31,6 +32,13 @@ class Company(Base, TimestampMixin):
     )
     monitoring_logs: Mapped[list["MonitoringLog"]] = relationship(
         "MonitoringLog", back_populates="company", cascade="all, delete-orphan", lazy="selectin"
+    )
+    scan_state: Mapped["CompanyScanState | None"] = relationship(
+        "CompanyScanState",
+        back_populates="company",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
 
     __table_args__ = (

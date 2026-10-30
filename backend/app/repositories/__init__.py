@@ -6,6 +6,7 @@ from app.repositories.job_repo import JobRepository
 from app.repositories.log_repo import MonitoringLogRepository
 from app.repositories.notification_repo import NotificationRepository
 from app.repositories.preference_repo import PreferenceProfileRepository
+from app.repositories.scan_state_repo import ScanStateRepository
 
 __all__ = [
     "BaseRepository",
@@ -14,4 +15,5 @@ __all__ = [
     "MonitoringLogRepository",
     "NotificationRepository",
     "PreferenceProfileRepository",
+    "ScanStateRepository",
 ]

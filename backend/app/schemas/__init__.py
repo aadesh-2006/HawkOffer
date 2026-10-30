@@ -30,6 +30,12 @@ from app.schemas.preference import (
     PreferenceProfileRead,
     PreferenceProfileUpdate,
 )
+from app.schemas.scan_state import (
+    ScanStateBase,
+    ScanStateCreate,
+    ScanStateRead,
+    ScanStateUpdate,
+)
 
 __all__ = [
     "CompanyBase",
@@ -52,4 +58,8 @@ __all__ = [
     "PreferenceProfileCreate",
     "PreferenceProfileRead",
     "PreferenceProfileUpdate",
+    "ScanStateBase",
+    "ScanStateCreate",
+    "ScanStateRead",
+    "ScanStateUpdate",
 ]
