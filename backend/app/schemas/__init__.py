@@ -19,9 +19,12 @@ from app.schemas.log import (
     MonitoringLogRead,
 )
 from app.schemas.notification import (
+    DeliveryStatus,
     NotificationBase,
     NotificationCreate,
     NotificationRead,
+    NotificationStatus,
+    NotificationType,
     NotificationUpdate,
 )
 from app.schemas.preference import (
@@ -50,9 +53,12 @@ __all__ = [
     "MonitoringLogBase",
     "MonitoringLogCreate",
     "MonitoringLogRead",
+    "DeliveryStatus",
     "NotificationBase",
     "NotificationCreate",
     "NotificationRead",
+    "NotificationStatus",
+    "NotificationType",
     "NotificationUpdate",
     "PreferenceProfileBase",
     "PreferenceProfileCreate",

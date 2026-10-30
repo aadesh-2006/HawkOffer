@@ -25,8 +25,12 @@ target_metadata = Base.metadata
 # Ensure storage directory exists before running migrations
 settings.ensure_data_dir()
 
-# Override URL with the dynamically resolved sync database URL
-config.set_main_option("sqlalchemy.url", settings.get_sync_database_url())
+# Override URL with the dynamically resolved sync database URL if not explicitly provided
+x_args = context.get_x_argument(as_dictionary=True)
+if "db_url" in x_args:
+    config.set_main_option("sqlalchemy.url", x_args["db_url"])
+elif config.get_main_option("sqlalchemy.url") in (None, "", "sqlite:///hawkoffer.db"):
+    config.set_main_option("sqlalchemy.url", settings.get_sync_database_url())
 
 
 def run_migrations_offline() -> None:

@@ -25,13 +25,17 @@ class Notification(Base):
     profile_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("preference_profiles.id", ondelete="SET NULL"), nullable=True
     )
-    notification_type: Mapped[str] = mapped_column(
-        String(50), default="desktop_toast", nullable=False
-    )
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notification_type: Mapped[str] = mapped_column(String(50), default="job_alert", nullable=False)
     status: Mapped[str] = mapped_column(
+        String(50), default="UNREAD", nullable=False
+    )  # 'UNREAD', 'READ', 'DISMISSED'
+    delivery_status: Mapped[str] = mapped_column(
         String(50), default="PENDING", nullable=False
-    )  # 'PENDING', 'DELIVERED', 'FAILED', 'DISMISSED'
+    )  # 'PENDING', 'DELIVERED', 'FAILED', 'NOT_REQUIRED'
+
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -65,8 +69,20 @@ class Notification(Base):
         ),
         Index("ix_notifications_job_id", "job_id"),
         Index("ix_notifications_status", "status"),
+        Index("ix_notifications_delivery_status", "delivery_status"),
         Index("ix_notifications_delivered_at", "delivered_at"),
+        Index("ix_notifications_read_at", "read_at"),
+        Index("ix_notifications_dismissed_at", "dismissed_at"),
+        Index(
+            "ix_notifications_profile_status_created",
+            "profile_id",
+            "status",
+            "created_at",
+        ),
     )
 
     def __repr__(self) -> str:
-        return f"<Notification(id={self.id}, job_id={self.job_id}, status='{self.status}')>"
+        return (
+            f"<Notification(id={self.id}, job_id={self.job_id}, "
+            f"status='{self.status}', delivery='{self.delivery_status}')>"
+        )
