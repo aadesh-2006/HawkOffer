@@ -28,8 +28,11 @@ class PreferenceProfile(Base, TimestampMixin):
     preferred_employment_types: Mapped[list[str]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    required_employment_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     preferred_workplace_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     excluded_keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    excluded_title_keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    excluded_content_keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     required_roles: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     required_locations: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 

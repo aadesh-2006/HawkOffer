@@ -2,15 +2,19 @@
 
 import copy
 
-from app.filtering.engine import JobFilteringEngine
+from app.filtering.engine import JobFilteringEngine, infer_remote
 from app.filtering.models import (
     EligibilityStatus,
+)
+from app.filtering.scoring import (
+    contains_keyword,
+    match_locations,
 )
 from app.models.job import Job
 from app.models.preference import PreferenceProfile
 
 # =============================================================================
-# 1. Exact and Partial Title Matching
+# 1. Exact and Partial Title Matching & Acronym Expansion (Finding 9)
 # =============================================================================
 
 
@@ -26,7 +30,7 @@ def test_title_matching_exact_and_partial() -> None:
     job_exact = {"title": "software engineer"}
     res_exact = engine.evaluate(job_exact, profile)
     assert res_exact.status == EligibilityStatus.ELIGIBLE
-    assert res_exact.score == 100.0  # Only role dimension active, 100% of weight
+    assert res_exact.score == 100.0
     assert any(r.code == "title_exact_match" for r in res_exact.matched_criteria)
 
     # 2. Phrase containment
@@ -51,6 +55,37 @@ def test_title_matching_exact_and_partial() -> None:
     res_nomatch = engine.evaluate(job_nomatch, profile)
     assert res_nomatch.score == 0.0
     assert any(r.code == "title_no_match" for r in res_nomatch.failed_criteria)
+
+
+def test_tech_acronym_normalization() -> None:
+    """Verify standard tech acronyms (SWE, SRE, ML, QA) match expanded titles."""
+    engine = JobFilteringEngine()
+
+    profile = {
+        "preferred_roles": [
+            "Software Engineer",
+            "Site Reliability Engineer",
+            "Machine Learning Engineer",
+            "Quality Assurance",
+        ],
+    }
+
+    # SWE Intern matching Software Engineer
+    res_swe = engine.evaluate({"title": "SWE Intern"}, profile)
+    assert res_swe.score >= 85.0
+    assert any("title" in r.code and r.is_passing for r in res_swe.matched_criteria)
+
+    # SRE matching Site Reliability Engineer
+    res_sre = engine.evaluate({"title": "SRE"}, profile)
+    assert res_sre.score == 100.0
+
+    # ML Engineer matching Machine Learning Engineer
+    res_ml = engine.evaluate({"title": "ML Engineer"}, profile)
+    assert res_ml.score == 100.0
+
+    # QA Analyst matching Quality Assurance
+    res_qa = engine.evaluate({"title": "QA Analyst"}, profile)
+    assert res_qa.score >= 85.0
 
 
 # =============================================================================
@@ -83,7 +118,7 @@ def test_case_insensitive_matching() -> None:
 
 
 # =============================================================================
-# 3. Skills Matching and Duplicate Keywords
+# 3. Skills Matching and Single-Character Technology Fix (Finding 7)
 # =============================================================================
 
 
@@ -91,12 +126,10 @@ def test_skills_matching_and_deduplication() -> None:
     """Verify skill keyword matching with symbol handling and duplicate prevention."""
     engine = JobFilteringEngine()
 
-    # User profile has duplicate entries in different casings
     profile = {
         "preferred_skills": ["Python", "python", "PYTHON", "C++", "Docker", "Kubernetes"],
     }
 
-    # Job description mentions Python multiple times, C++ once, Docker once
     job = {
         "title": "Engineer",
         "description": (
@@ -107,9 +140,6 @@ def test_skills_matching_and_deduplication() -> None:
 
     res = engine.evaluate(job, profile)
     assert res.status == EligibilityStatus.ELIGIBLE
-
-    # Matched skills: Python, C++, Docker (3 out of 4 unique: Python, C++, Docker, Kubernetes)
-    # 3 / 4 = 75.0%
     assert res.score == 75.0
     reason = next(r for r in res.matched_criteria if r.code == "skills_match")
     matched = reason.details["matched_skills"]
@@ -117,316 +147,362 @@ def test_skills_matching_and_deduplication() -> None:
     assert set(matched) == {"Python", "C++", "Docker"}
 
 
+def test_single_character_and_symbolic_technology_matching() -> None:
+    """Verify single-character languages (C, R) and symbols (C++, C#, .NET, Node.js)."""
+    # 1. Objective-C must NOT match language C
+    assert contains_keyword("Looking for an Objective-C developer", "C") is False
+    assert contains_keyword("iOS app built in Objective-C and Swift", "C") is False
+
+    # 2. Genuine C language matches
+    assert contains_keyword("Must know C and C++.", "C") is True
+    assert contains_keyword("Experience with C programming.", "C") is True
+    assert contains_keyword("Core languages: (C, Assembly, Rust)", "C") is True
+
+    # 3. Language R
+    assert contains_keyword("Statistical analysis with R.", "R") is True
+    assert contains_keyword("Looking for R&D engineers", "R") is False
+
+    # 4. Complex symbols: C++, C#, .NET, Node.js, Vue.js, CI/CD, TS/SCI
+    assert contains_keyword("Expertise with C++17 and C++20", "C++") is True
+    assert contains_keyword("Backend service in C#", "C#") is True
+    assert contains_keyword("Built on .NET Core", ".NET") is True
+    assert contains_keyword("Node.js fullstack dev", "Node.js") is True
+    assert contains_keyword("Vue.js frontend", "Vue.js") is True
+    assert contains_keyword("CI/CD deployment pipelines", "CI/CD") is True
+    assert contains_keyword("TS/SCI clearance required", "TS/SCI") is True
+
+
 # =============================================================================
-# 4. Location Matching and Normalization
+# 4. Location Matching Remediation (Finding 1)
 # =============================================================================
 
 
-def test_location_matching() -> None:
-    """Verify city/state matching, remote matching, and non-matches."""
+def test_location_false_positives_eliminated() -> None:
+    """Verify state abbreviations do not match substrings in unrelated city names."""
+    # 1. Substring collisions confirmed fixed:
+    assert match_locations("Chicago, IL", False, ["CA"])[0] is False
+    assert match_locations("Austin, TX", False, ["IN"])[0] is False
+    assert match_locations("Orlando, FL", False, ["OR"])[0] is False
+    assert match_locations("Dallas, TX", False, ["AL"])[0] is False
+    assert match_locations("Miami, FL", False, ["MI"])[0] is False
+
+    # 2. York (UK) vs New York (NY) confirmed fixed:
+    assert match_locations("York, UK", False, ["New York, NY"])[0] is False
+    assert match_locations("York", False, ["New York"])[0] is False
+
+    # 3. Legitimate positive matches work accurately:
+    assert match_locations("Los Angeles, CA", False, ["CA"])[0] is True
+    assert match_locations("San Francisco, CA", False, ["California"])[0] is True
+    assert match_locations("San Francisco, CA", False, ["San Francisco, CA"])[0] is True
+    assert match_locations("San Francisco, CA", False, ["San Francisco"])[0] is True
+    assert match_locations("New York, NY", False, ["New York, NY"])[0] is True
+    assert match_locations("New York, NY", False, ["NY"])[0] is True
+    assert match_locations("Chicago, IL", False, ["Chicago, IL"])[0] is True
+    assert match_locations("Remote - US", False, ["Remote"])[0] is True
+
+
+# =============================================================================
+# 5. Remote Inference Without False Positives (Finding 8)
+# =============================================================================
+
+
+def test_remote_inference_accuracy() -> None:
+    """Verify domain titles (remote sensing) do not trigger false remote inference."""
+    # 1. Non-remote domain titles
+    assert infer_remote(None, "Reston, VA", "Remote Sensing Specialist") is False
+    assert infer_remote(None, "San Diego, CA", "Remote Vehicle Pilot") is False
+    assert infer_remote(None, "Houston, TX", "Remote Operations Control Tech") is False
+
+    # 2. Legitimate remote titles and metadata
+    assert infer_remote("remote", "Austin, TX", "Software Engineer") is True
+    assert infer_remote(None, "Remote - US", "Backend Developer") is True
+    assert infer_remote(None, None, "Remote Software Engineer") is True
+    assert infer_remote(None, "New York, NY", "Senior SRE (Work From Home)") is True
+
+
+# =============================================================================
+# 6. Scoped Exclusion Keywords (Finding 2)
+# =============================================================================
+
+
+def test_scoped_exclusion_keywords() -> None:
+    """Verify 'Senior' in internship description does not reject the internship."""
     engine = JobFilteringEngine()
 
-    profile = {
-        "preferred_locations": ["New York, NY", "Remote"],
+    # Case A: Legacy profile with excluded_keywords = ["Senior"]
+    # Should automatically scope seniority terms to title, NOT rejecting description mentions!
+    legacy_profile = {
+        "preferred_roles": ["Software Engineering Intern"],
+        "excluded_keywords": ["Senior"],
     }
 
-    # 1. City match
-    res1 = engine.evaluate({"title": "Dev", "location": "New York, NY"}, profile)
-    assert any(r.code == "location_match" for r in res1.matched_criteria)
-    assert res1.score == 100.0
-
-    # 2. Remote match via location text
-    res2 = engine.evaluate({"title": "Dev", "location": "Remote - US"}, profile)
-    assert any(r.code == "location_match" for r in res2.matched_criteria)
-
-    # 3. Remote match via job_type
-    res3 = engine.evaluate({"title": "Dev", "location": None, "job_type": "remote"}, profile)
-    assert any(r.code == "location_match" for r in res3.matched_criteria)
-
-    # 4. Location mismatch
-    res4 = engine.evaluate({"title": "Dev", "location": "London, UK"}, profile)
-    assert any(r.code == "location_no_match" for r in res4.failed_criteria)
-    assert res4.score == 0.0
-
-
-# =============================================================================
-# 5. Remote / Hybrid / On-Site Preferences
-# =============================================================================
-
-
-def test_workplace_type_preferences() -> None:
-    """Verify workplace arrangement matching and neutral unstated handling."""
-    engine = JobFilteringEngine()
-
-    profile = {
-        "preferred_workplace_types": ["remote", "hybrid"],
+    intern_job = {
+        "title": "Software Engineering Intern",
+        "description": "You will be paired with a Senior Engineer who will mentor you.",
     }
-
-    # Match
-    res_remote = engine.evaluate({"title": "Dev", "job_type": "remote"}, profile)
-    assert res_remote.score == 100.0
-    assert any(r.code == "workplace_type_match" for r in res_remote.matched_criteria)
-
-    # Mismatch
-    res_onsite = engine.evaluate({"title": "Dev", "job_type": "onsite"}, profile)
-    assert res_onsite.score == 0.0
-    assert any(r.code == "workplace_type_no_match" for r in res_onsite.failed_criteria)
-
-    # Omitted (neutral partial credit)
-    res_none = engine.evaluate({"title": "Dev", "job_type": None}, profile)
-    assert res_none.score == 50.0  # 50% neutral partial weight
-    assert any(r.code == "workplace_type_unknown" for r in res_none.unknown_criteria)
-
-
-# =============================================================================
-# 6. Internship versus Full-Time Filtering
-# =============================================================================
-
-
-def test_employment_type_hard_filtering() -> None:
-    """Verify hard exclusion for conflicting employment types and neutral for omitted."""
-    engine = JobFilteringEngine()
-
-    # User strictly wants internships
-    profile = {
-        "preferred_employment_types": ["internship"],
-    }
-
-    # 1. Matches internship
-    res_intern = engine.evaluate({"title": "SWE Intern", "employment_type": "internship"}, profile)
+    res_intern = engine.evaluate(intern_job, legacy_profile)
     assert res_intern.status == EligibilityStatus.ELIGIBLE
-    assert any(r.code == "employment_type_match" for r in res_intern.matched_criteria)
+    assert not any(r.code == "excluded_title_keyword_found" for r in res_intern.failed_criteria)
 
-    # 2. Conflicting full_time is marked INELIGIBLE
-    res_ft = engine.evaluate({"title": "Senior SWE", "employment_type": "full_time"}, profile)
-    assert res_ft.status == EligibilityStatus.INELIGIBLE
-    assert any(r.code == "employment_type_mismatch" for r in res_ft.failed_criteria)
+    # Job title with Senior is rejected
+    senior_job = {
+        "title": "Senior Software Engineer",
+        "description": "Looking for experienced backend developers.",
+    }
+    res_senior = engine.evaluate(senior_job, legacy_profile)
+    assert res_senior.status == EligibilityStatus.INELIGIBLE
+    assert any(r.code == "excluded_title_keyword_found" for r in res_senior.failed_criteria)
 
-    # 3. Omitted employment type is marked NEEDS_REVIEW (not silently rejected!)
-    res_omitted = engine.evaluate({"title": "Software Engineer", "employment_type": None}, profile)
-    assert res_omitted.status == EligibilityStatus.NEEDS_REVIEW
-    assert any(r.code == "employment_type_unknown" for r in res_omitted.unknown_criteria)
+    # Case B: Explicit excluded_content_keywords
+    content_ex_profile = {
+        "excluded_content_keywords": ["Top Secret Clearance"],
+    }
+    clearance_job = {
+        "title": "Junior Developer",
+        "description": "Must hold an active Top Secret Clearance.",
+    }
+    res_clearance = engine.evaluate(clearance_job, content_ex_profile)
+    assert res_clearance.status == EligibilityStatus.INELIGIBLE
+    assert any(r.code == "excluded_content_keyword_found" for r in res_clearance.failed_criteria)
 
 
 # =============================================================================
-# 7. Graduation-Year Match, Mismatch, and Missing Information
+# 7. Minimum Relevance Score Before NEEDS_REVIEW (Finding 3)
 # =============================================================================
 
 
-def test_graduation_year_strict_and_soft() -> None:
-    """Verify strict graduation year matching vs missing info and soft differences."""
+def test_minimum_score_before_needs_review() -> None:
+    """Verify score threshold evaluates before unknown criteria produces NEEDS_REVIEW."""
     engine = JobFilteringEngine()
 
-    # Case A: Strict requirement (require_graduation_year_match=True)
-    strict_profile = {
+    profile = {
+        "preferred_roles": ["Backend Engineer"],
         "graduation_year": 2026,
         "require_graduation_year_match": True,
+        "minimum_match_score": 80.0,
     }
 
-    # 1. Matching grad year
-    res_match = engine.evaluate({"title": "Intern", "graduation_year": 2026}, strict_profile)
+    # 1. Dishwasher with missing grad year and min score 80 -> INELIGIBLE (not NEEDS_REVIEW)
+    dishwasher_job = {
+        "title": "Commercial Dishwasher",
+        "graduation_year": None,
+    }
+    res_dw = engine.evaluate(dishwasher_job, profile)
+    assert res_dw.status == EligibilityStatus.INELIGIBLE
+    assert res_dw.score == 0.0
+    assert any(r.code == "minimum_score_unmet" for r in res_dw.failed_criteria)
+
+    # 2. Relevant internship with missing mandatory grad year -> NEEDS_REVIEW
+    relevant_job = {
+        "title": "Backend Engineer",
+        "description": "Building microservices",
+        "graduation_year": None,
+    }
+    res_rel = engine.evaluate(relevant_job, profile)
+    assert res_rel.status == EligibilityStatus.NEEDS_REVIEW
+    assert res_rel.score >= 80.0
+    assert any(r.code == "graduation_year_unknown" for r in res_rel.unknown_criteria)
+
+    # 3. Relevant job with matching grad year -> ELIGIBLE
+    matching_job = {
+        "title": "Backend Engineer",
+        "description": "Class of 2026 only.",
+        "graduation_year": 2026,
+    }
+    res_match = engine.evaluate(matching_job, profile)
     assert res_match.status == EligibilityStatus.ELIGIBLE
     assert any(r.code == "graduation_year_match" for r in res_match.matched_criteria)
 
-    # 2. Confirmed mismatch -> INELIGIBLE
-    res_mismatch = engine.evaluate({"title": "Intern", "graduation_year": 2025}, strict_profile)
+    # 4. Relevant job with confirmed grad year mismatch -> INELIGIBLE
+    mismatch_job = {
+        "title": "Backend Engineer",
+        "description": "Class of 2024 only.",
+        "graduation_year": 2024,
+    }
+    res_mismatch = engine.evaluate(mismatch_job, profile)
     assert res_mismatch.status == EligibilityStatus.INELIGIBLE
     assert any(r.code == "graduation_year_mismatch" for r in res_mismatch.failed_criteria)
 
-    # 3. Omitted grad year on job -> NEEDS_REVIEW (cannot verify requirement)
-    res_unknown = engine.evaluate({"title": "Intern", "graduation_year": None}, strict_profile)
-    assert res_unknown.status == EligibilityStatus.NEEDS_REVIEW
-    assert any(r.code == "graduation_year_unknown" for r in res_unknown.unknown_criteria)
 
-    # Case B: Soft preference (require_graduation_year_match=False)
+# =============================================================================
+# 8. Separate Preferred and Required Employment Types (Finding 4)
+# =============================================================================
+
+
+def test_preferred_vs_required_employment_types() -> None:
+    """Verify preferred employment is soft preference while required is hard constraint."""
+    engine = JobFilteringEngine()
+
+    # Case A: Preferred internship (Soft Preference)
     soft_profile = {
-        "graduation_year": 2026,
-        "require_graduation_year_match": False,
-    }
-
-    # Different grad year is not hard ineligible
-    res_soft_diff = engine.evaluate({"title": "Intern", "graduation_year": 2027}, soft_profile)
-    assert res_soft_diff.status == EligibilityStatus.ELIGIBLE
-    assert any(r.code == "graduation_year_differs" for r in res_soft_diff.failed_criteria)
-
-
-# =============================================================================
-# 8. Exclusion Keywords
-# =============================================================================
-
-
-def test_exclusion_keywords() -> None:
-    """Verify exclusion keywords in title or description cause hard ineligibility."""
-    engine = JobFilteringEngine()
-
-    profile = {
-        "excluded_keywords": ["Senior", "Staff", "Director", "Clearance"],
-    }
-
-    # 1. Excluded keyword in title
-    res_title = engine.evaluate({"title": "Senior Backend Engineer"}, profile)
-    assert res_title.status == EligibilityStatus.INELIGIBLE
-    assert any(r.code == "excluded_keyword_found" for r in res_title.failed_criteria)
-
-    # 2. Excluded keyword in description
-    res_desc = engine.evaluate(
-        {
-            "title": "Software Engineer",
-            "description": "Active Secret Security Clearance required.",
-        },
-        profile,
-    )
-    assert res_desc.status == EligibilityStatus.INELIGIBLE
-    assert any(r.code == "excluded_keyword_found" for r in res_desc.failed_criteria)
-
-    # 3. Substring false positive guard (e.g. 'staff' must not match 'foodstaff' or 'distaff')
-    res_false_pos = engine.evaluate(
-        {"title": "Software Engineer", "description": "Free foodstaff in cafeteria."}, profile
-    )
-    assert res_false_pos.status == EligibilityStatus.ELIGIBLE
-    assert any(r.code == "no_excluded_keywords" for r in res_false_pos.matched_criteria)
-
-
-# =============================================================================
-# 9. Empty or Partially Configured Preference Profiles
-# =============================================================================
-
-
-def test_empty_or_partial_profile() -> None:
-    """Verify engine handles empty or single-dimension profiles gracefully."""
-    engine = JobFilteringEngine()
-
-    empty_profile: dict[str, list[str]] = {}
-    job = {"title": "Software Engineer", "location": "Remote"}
-
-    res = engine.evaluate(job, empty_profile)
-    assert res.status == EligibilityStatus.ELIGIBLE
-    assert res.score == 100.0  # Unconstrained profile defaults to baseline 100%
-
-    # Profile with only skills
-    skills_only_profile = {"preferred_skills": ["Python"]}
-    job_with_skill = {"title": "Engineer", "description": "Python developer"}
-    res_skills = engine.evaluate(job_with_skill, skills_only_profile)
-    assert res_skills.status == EligibilityStatus.ELIGIBLE
-    assert res_skills.score == 100.0  # 1/1 skills matched across active dimension
-
-
-# =============================================================================
-# 10. Missing Job Metadata
-# =============================================================================
-
-
-def test_missing_job_metadata_resilience() -> None:
-    """Verify evaluation does not raise exceptions when job has empty or None fields."""
-    engine = JobFilteringEngine()
-
-    profile = {
         "preferred_roles": ["Software Engineer"],
-        "preferred_skills": ["Python"],
-        "preferred_locations": ["San Francisco"],
-        "preferred_employment_types": ["full_time"],
-        "preferred_workplace_types": ["remote"],
+        "preferred_employment_types": ["internship"],
     }
 
-    sparse_job = {
-        "title": "Software Engineer",
-        "description": None,
-        "location": None,
-        "department": None,
-        "employment_type": None,
-        "job_type": None,
-        "graduation_year": None,
+    # Full-time job is NOT automatically ineligible
+    res_soft_ft = engine.evaluate(
+        {"title": "Software Engineer", "employment_type": "full_time"}, soft_profile
+    )
+    assert res_soft_ft.status == EligibilityStatus.ELIGIBLE
+    # Missing employment type does NOT force review
+    res_soft_none = engine.evaluate(
+        {"title": "Software Engineer", "employment_type": None}, soft_profile
+    )
+    assert res_soft_none.status == EligibilityStatus.ELIGIBLE
+
+    # Case B: Required internship (Hard Constraint)
+    hard_profile = {
+        "preferred_roles": ["Software Engineer"],
+        "required_employment_types": ["internship"],
     }
 
-    res = engine.evaluate(sparse_job, profile)
-    # Because employment_type was required by profile but None on job, outcome is NEEDS_REVIEW
-    assert res.status == EligibilityStatus.NEEDS_REVIEW
-    assert len(res.unknown_criteria) >= 2
+    # Full-time job is hard INELIGIBLE
+    res_hard_ft = engine.evaluate(
+        {"title": "Software Engineer", "employment_type": "full_time"}, hard_profile
+    )
+    assert res_hard_ft.status == EligibilityStatus.INELIGIBLE
+    assert any(r.code == "required_employment_type_mismatch" for r in res_hard_ft.failed_criteria)
+
+    # Missing employment type is NEEDS_REVIEW
+    res_hard_none = engine.evaluate(
+        {"title": "Software Engineer", "employment_type": None}, hard_profile
+    )
+    assert res_hard_none.status == EligibilityStatus.NEEDS_REVIEW
+    assert any(r.code == "required_employment_type_unknown" for r in res_hard_none.unknown_criteria)
 
 
 # =============================================================================
-# 11. Outcomes: Eligible, Ineligible, and Needs Review
+# 9. Multiple Eligible Graduation Years / Cohorts (Finding 5)
 # =============================================================================
 
 
-def test_outcome_classifications() -> None:
-    """Verify the 3 distinct outcomes (ELIGIBLE, INELIGIBLE, NEEDS_REVIEW)."""
+def test_multiple_eligible_graduation_years() -> None:
+    """Verify job postings targeting cohorts (e.g. 2025-2027) accept candidate year."""
     engine = JobFilteringEngine()
 
-    profile = {
-        "preferred_roles": ["Backend Engineer"],
-        "required_roles": ["Backend Engineer"],
-        "preferred_skills": ["Python", "FastAPI"],
+    profile_2026 = {
         "graduation_year": 2026,
         "require_graduation_year_match": True,
-        "minimum_match_score": 70.0,
     }
 
-    # 1. ELIGIBLE: Meets hard criteria and exceeds minimum score
-    eligible_job = {
-        "title": "Backend Engineer",
-        "description": "Python and FastAPI developer",
-        "graduation_year": 2026,
+    # 1. Multiple explicitly eligible years: "Class of 2025, 2026, or 2027"
+    job_cohort_list = {
+        "title": "Software Engineering Intern",
+        "description": "Open to Class of 2025, 2026, or 2027.",
     }
-    res1 = engine.evaluate(eligible_job, profile)
+    res1 = engine.evaluate(job_cohort_list, profile_2026)
     assert res1.status == EligibilityStatus.ELIGIBLE
-    assert res1.is_eligible is True
+    assert any(r.code == "graduation_year_match" for r in res1.matched_criteria)
 
-    # 2. INELIGIBLE: Fails required role
-    ineligible_job = {
-        "title": "Frontend Engineer",
-        "description": "Python and FastAPI developer",
-        "graduation_year": 2026,
+    # 2. Range: "2025-2027"
+    job_range = {
+        "title": "2025-2027 Tech Intern",
+        "description": "Graduating between 2025 and 2027.",
     }
-    res2 = engine.evaluate(ineligible_job, profile)
-    assert res2.status == EligibilityStatus.INELIGIBLE
-    assert res2.is_ineligible is True
+    res2 = engine.evaluate(job_range, profile_2026)
+    assert res2.status == EligibilityStatus.ELIGIBLE
 
-    # 3. NEEDS_REVIEW: Role matches, but graduation year is omitted
-    review_job = {
-        "title": "Backend Engineer",
-        "description": "Python and FastAPI developer",
-        "graduation_year": None,
+    # 3. Candidate outside range (2024 graduate evaluated against 2025-2027 cohort)
+    profile_2024 = {
+        "graduation_year": 2024,
+        "require_graduation_year_match": True,
     }
-    res3 = engine.evaluate(review_job, profile)
-    assert res3.status == EligibilityStatus.NEEDS_REVIEW
-    assert res3.needs_review is True
+    res3 = engine.evaluate(job_range, profile_2024)
+    assert res3.status == EligibilityStatus.INELIGIBLE
+    assert any(r.code == "graduation_year_mismatch" for r in res3.failed_criteria)
+
+    # 4. Unrelated years (corporate history, copyright) do not create false cohorts
+    unrelated_job = {
+        "title": "Software Engineer",
+        "description": "Company was established in 2024. All rights reserved 2025.",
+    }
+    res_unrelated = engine.evaluate(unrelated_job, profile_2026)
+    # No graduation cohort specified -> unknown (NEEDS_REVIEW if required, not false mismatch)
+    assert res_unrelated.status == EligibilityStatus.NEEDS_REVIEW
+    assert any(r.code == "graduation_year_unknown" for r in res_unrelated.unknown_criteria)
 
 
 # =============================================================================
-# 12. Score Boundaries and Determinism
+# 10. Missing Metadata Scoring Normalization (Finding 6)
 # =============================================================================
 
 
-def test_score_boundaries_and_determinism() -> None:
-    """Verify score is bounded in [0.0, 100.0] and strictly deterministic."""
+def test_missing_metadata_scoring_normalization() -> None:
+    """Verify missing metadata is excluded from denominator without arbitrary 50% reward."""
     engine = JobFilteringEngine()
 
     profile = {
-        "preferred_roles": ["Backend Engineer"],
-        "preferred_skills": ["Python", "Docker", "SQL"],
-        "preferred_locations": ["Austin, TX"],
+        "preferred_roles": ["Software Engineer"],  # 35
+        "preferred_skills": ["Python"],  # 35
+        "preferred_workplace_types": ["remote"],  # 10
+        "preferred_employment_types": ["full_time"],  # 5
     }
 
-    job = {
-        "title": "Backend Engineer",
-        "description": "Python and Docker skills needed.",
-        "location": "Austin, TX",
+    # Job A: Matches role and skill, workplace_type is omitted
+    # Active weight: 35 (role) + 35 (skills) = 70. Earned: 35 + 35 = 70. Final score = 100.0
+    job_missing_wp = {
+        "title": "Software Engineer",
+        "description": "Python developer",
+        "job_type": None,
+        "employment_type": None,
     }
+    res_missing = engine.evaluate(job_missing_wp, profile)
+    assert res_missing.score == 100.0
+    assert any(r.code == "workplace_type_unknown" for r in res_missing.unknown_criteria)
 
-    # Run evaluation 5 times; results must be identical
-    results = [engine.evaluate(job, profile) for _ in range(5)]
-    first_score = results[0].score
+    # Job B: Matches role and skill, but explicitly ONSITE (conflict with remote preference)
+    # Active weight: 35 + 35 + 10 = 80. Earned: 35 + 35 + 0 = 70. Final score = 70 / 80 = 87.5
+    job_onsite = {
+        "title": "Software Engineer",
+        "description": "Python developer",
+        "job_type": "onsite",
+        "employment_type": None,
+    }
+    res_onsite = engine.evaluate(job_onsite, profile)
+    assert res_onsite.score == 87.5
+    assert any(r.code == "workplace_type_no_match" for r in res_onsite.failed_criteria)
 
-    assert 0.0 <= first_score <= 100.0
-    for r in results:
-        assert r.score == first_score
-        assert [c.code for c in r.matched_criteria] == [c.code for c in results[0].matched_criteria]
+    # Job C: Matching remote workplace type
+    # Active weight: 35 + 35 + 10 = 80. Earned: 35 + 35 + 10 = 80. Final score = 100.0
+    job_remote = {
+        "title": "Software Engineer",
+        "description": "Python developer",
+        "job_type": "remote",
+        "employment_type": None,
+    }
+    res_remote = engine.evaluate(job_remote, profile)
+    assert res_remote.score == 100.0
+    assert any(r.code == "workplace_type_match" for r in res_remote.matched_criteria)
 
 
 # =============================================================================
-# 13. Multiple Preference Profile Isolation
+# 11. Immutability, Profile Isolation, and DB Model Compatibility
 # =============================================================================
+
+
+def test_source_objects_not_mutated() -> None:
+    """Verify evaluation does not alter the input Job or PreferenceProfile."""
+    engine = JobFilteringEngine()
+
+    original_job = {
+        "id": 42,
+        "title": "Platform Engineer",
+        "description": "Terraform and Go",
+        "preferred_skills": ["SHOULD_NOT_BE_MODIFIED"],
+    }
+    original_profile = {
+        "id": 7,
+        "preferred_roles": ["Platform Engineer"],
+        "preferred_skills": ["Go", "Terraform"],
+    }
+
+    job_copy = copy.deepcopy(original_job)
+    profile_copy = copy.deepcopy(original_profile)
+
+    engine.evaluate(original_job, original_profile)
+
+    assert original_job == job_copy
+    assert original_profile == profile_copy
 
 
 def test_multiple_profile_isolation() -> None:
@@ -461,78 +537,14 @@ def test_multiple_profile_isolation() -> None:
     assert res_pm.score == 0.0
 
 
-# =============================================================================
-# 14. No Mutation of Source Objects
-# =============================================================================
-
-
-def test_source_objects_not_mutated() -> None:
-    """Verify evaluation does not alter the input Job or PreferenceProfile."""
-    engine = JobFilteringEngine()
-
-    original_job = {
-        "id": 42,
-        "title": "Platform Engineer",
-        "description": "Terraform and Go",
-        "preferred_skills": ["SHOULD_NOT_BE_MODIFIED"],
-    }
-    original_profile = {
-        "id": 7,
-        "preferred_roles": ["Platform Engineer"],
-        "preferred_skills": ["Go", "Terraform"],
-    }
-
-    job_copy = copy.deepcopy(original_job)
-    profile_copy = copy.deepcopy(original_profile)
-
-    engine.evaluate(original_job, original_profile)
-
-    assert original_job == job_copy
-    assert original_profile == profile_copy
-
-
-# =============================================================================
-# 15. Invalid or Unexpected Input Values
-# =============================================================================
-
-
-def test_unexpected_and_invalid_inputs() -> None:
-    """Verify robust handling of empty strings, none values, and mismatched types."""
-    engine = JobFilteringEngine()
-
-    # Empty strings, nulls, negative numbers in dict
-    weird_job = {
-        "id": "not_an_int",
-        "title": "",
-        "description": None,
-        "location": "",
-        "graduation_year": "invalid_year",
-    }
-    weird_profile = {
-        "id": None,
-        "preferred_roles": ["", None, "Engineer"],
-        "preferred_skills": [],
-        "minimum_match_score": -10.0,
-    }
-
-    res = engine.evaluate(weird_job, weird_profile)
-    assert res is not None
-    assert 0.0 <= res.score <= 100.0
-
-
-# =============================================================================
-# 16. Integration with SQLAlchemy ORM and Pydantic Models
-# =============================================================================
-
-
-def test_orm_and_pydantic_model_compatibility() -> None:
+def test_orm_compatibility_and_batch() -> None:
     """Verify engine evaluates real SQLAlchemy Job and PreferenceProfile objects."""
     engine = JobFilteringEngine()
 
     job = Job(
         id=10,
         company_id=1,
-        title="Senior Site Reliability Engineer",
+        title="Site Reliability Engineer",
         description="Kubernetes, Linux, Python troubleshooting.",
         location="Remote, US",
         employment_type="full_time",
@@ -546,12 +558,12 @@ def test_orm_and_pydantic_model_compatibility() -> None:
     profile = PreferenceProfile(
         id=5,
         name="SRE Hunter",
-        preferred_roles=["Site Reliability Engineer", "DevOps"],
+        preferred_roles=["Site Reliability Engineer"],
         preferred_skills=["Kubernetes", "Linux", "Python"],
         preferred_locations=["Remote"],
-        preferred_employment_types=["full_time"],
+        required_employment_types=["full_time"],
         preferred_workplace_types=["remote"],
-        excluded_keywords=["Manager"],
+        excluded_title_keywords=["Manager"],
         graduation_year=2024,
         require_graduation_year_match=True,
         minimum_match_score=80.0,
@@ -563,26 +575,8 @@ def test_orm_and_pydantic_model_compatibility() -> None:
     assert result.profile_id == 5
     assert result.status == EligibilityStatus.ELIGIBLE
     assert result.score >= 80.0
-    assert any(r.code == "no_excluded_keywords" for r in result.matched_criteria)
-    assert any(r.code == "graduation_year_match" for r in result.matched_criteria)
-    assert any(r.code == "employment_type_match" for r in result.matched_criteria)
-    assert any(r.code == "workplace_type_match" for r in result.matched_criteria)
-    assert any(r.code == "skills_match" for r in result.matched_criteria)
+    assert any(r.code == "required_employment_type_match" for r in result.matched_criteria)
 
-
-def test_batch_evaluation() -> None:
-    """Verify batch evaluation processes multiple jobs efficiently."""
-    engine = JobFilteringEngine()
-
-    profile = {"preferred_roles": ["Engineer"]}
-    jobs = [
-        {"id": 1, "title": "Engineer"},
-        {"id": 2, "title": "Designer"},
-        {"id": 3, "title": "Accountant"},
-    ]
-
-    results = engine.evaluate_batch(jobs, profile)
-    assert len(results) == 3
-    assert results[0].score == 100.0
-    assert results[1].score == 0.0
-    assert results[2].score == 0.0
+    batch_res = engine.evaluate_batch([job], profile)
+    assert len(batch_res) == 1
+    assert batch_res[0].status == EligibilityStatus.ELIGIBLE

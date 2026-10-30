@@ -12,8 +12,11 @@ class PreferenceProfileBase(BaseModel):
     preferred_locations: list[str] = Field(default_factory=list)
     preferred_skills: list[str] = Field(default_factory=list)
     preferred_employment_types: list[str] = Field(default_factory=list)
+    required_employment_types: list[str] = Field(default_factory=list)
     preferred_workplace_types: list[str] = Field(default_factory=list)
     excluded_keywords: list[str] = Field(default_factory=list)
+    excluded_title_keywords: list[str] = Field(default_factory=list)
+    excluded_content_keywords: list[str] = Field(default_factory=list)
     required_roles: list[str] = Field(default_factory=list)
     required_locations: list[str] = Field(default_factory=list)
     require_graduation_year_match: bool = Field(default=False)
@@ -32,8 +35,11 @@ class PreferenceProfileUpdate(BaseModel):
     preferred_locations: list[str] | None = None
     preferred_skills: list[str] | None = None
     preferred_employment_types: list[str] | None = None
+    required_employment_types: list[str] | None = None
     preferred_workplace_types: list[str] | None = None
     excluded_keywords: list[str] | None = None
+    excluded_title_keywords: list[str] | None = None
+    excluded_content_keywords: list[str] | None = None
     required_roles: list[str] | None = None
     required_locations: list[str] | None = None
     require_graduation_year_match: bool | None = None

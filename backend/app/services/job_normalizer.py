@@ -150,10 +150,59 @@ class JobNormalizer:
         return None
 
     @classmethod
-    def extract_graduation_year(cls, title: str, description: str | None = None) -> int | None:
-        """Extract anticipated graduation year if specified in role title or description."""
+    def extract_graduation_years(cls, title: str, description: str | None = None) -> list[int]:
+        """Extract all explicitly eligible graduation cohort years (cohorts, ranges, sets).
+
+        Avoids misinterpreting corporate founding dates or copyright years as student cohorts.
+        """
         combined = f"{title} {description or ''}"
-        # Matches patterns like "2025 Intern", "Class of 2026", "2026/2027"
+        years: set[int] = set()
+
+        # 1. Range pattern: e.g. 2025-2027, 2025 to 2027
+        for m in re.finditer(
+            r"\b(202[4-9]|203[0-5])\s*(?:-|–|—|to)\s*(202[4-9]|203[0-5])\b",
+            combined,
+            re.IGNORECASE,
+        ):
+            y1, y2 = int(m.group(1)), int(m.group(2))
+            if y1 <= y2 and y2 - y1 <= 5:
+                years.update(range(y1, y2 + 1))
+
+        # 2. Explicit cohort patterns (e.g. 'Class of 2025, 2026', 'graduating in 2026/2027')
+        cohort_pattern = re.compile(
+            r"(?:class\s+of|graduat\w+|cohort|internship\s+for|students?\s+in)\s+[^.;\n]{0,60}?\b(202[4-9]|203[0-5])\b",
+            re.IGNORECASE,
+        )
+        for m in cohort_pattern.finditer(combined):
+            years.add(int(m.group(1)))
+            snippet = combined[m.end() : m.end() + 40]
+            for ty in re.findall(
+                r"(?:,|/|\bor\b|\band\b)\s*\b(202[4-9]|203[0-5])\b",
+                snippet,
+                re.IGNORECASE,
+            ):
+                years.add(int(ty))
+
+        # 3. Direct slash pattern: e.g. 2025/2026
+        for y1, y2 in re.findall(r"\b(202[4-9]|203[0-5])/(202[4-9]|203[0-5])\b", combined):
+            years.add(int(y1))
+            years.add(int(y2))
+
+        # 4. Explicit year in job title (e.g. '2026 Summer Software Engineering Intern')
+        for y in re.findall(r"\b(202[4-9]|203[0-5])\b", title):
+            years.add(int(y))
+
+        return sorted(years)
+
+    @classmethod
+    def extract_graduation_year(cls, title: str, description: str | None = None) -> int | None:
+        """Extract primary anticipated graduation year if specified in role title or description."""
+        years = cls.extract_graduation_years(title, description)
+        if years:
+            return years[0]
+
+        # Fallback regex for legacy single year match
+        combined = f"{title} {description or ''}"
         match = re.search(r"\b(202[4-9]|203[0-5])\b", combined)
         if match:
             return int(match.group(1))
