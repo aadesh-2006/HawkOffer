@@ -5,10 +5,12 @@ import time
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company import Company
 from app.models.job import Job
+from app.models.outbox import JobDiscoveryOutbox, OutboxStatus
 from app.repositories.company_repo import CompanyRepository
 from app.repositories.job_repo import JobRepository
 from app.repositories.log_repo import MonitoringLogRepository
@@ -226,10 +228,25 @@ class IngestionService:
                             first_seen_at=now,
                             last_seen_at=now,
                         )
-                        await self.job_repo.create(job_create)
+                        new_job = await self.job_repo.create(job_create)
+
+                        # Insert corresponding outbox record in the same savepoint
+                        outbox_stmt = (
+                            sqlite_insert(JobDiscoveryOutbox)
+                            .values(
+                                job_id=new_job.id,
+                                status=OutboxStatus.PENDING,
+                                attempt_count=0,
+                            )
+                            .on_conflict_do_nothing(index_elements=["job_id"])
+                        )
+                        await self.session.execute(outbox_stmt)
+
                         result.newly_inserted += 1
                         logger.debug(
-                            "Inserted new job for company %d: '%s'", company.id, norm.title
+                            "Inserted new job and outbox record for company %d: '%s'",
+                            company.id,
+                            norm.title,
                         )
 
             except Exception as exc:
