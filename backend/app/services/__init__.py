@@ -1,5 +1,11 @@
 """Services package exports."""
 
+from app.services.backlog_drain_worker import (
+    BacklogDrainWorker,
+    ClaimedBacklogItem,
+    DrainRunResult,
+    PromotionStatus,
+)
 from app.services.discovery_worker import (
     BacklogCandidate,
     ClaimedOutboxRecord,
@@ -19,10 +25,13 @@ from app.services.reevaluation_worker import (
 
 __all__ = [
     "BacklogCandidate",
+    "BacklogDrainWorker",
     "ChunkCommitStatus",
+    "ClaimedBacklogItem",
     "ClaimedOutboxRecord",
     "ClaimedReevaluationTask",
     "DiscoveryRunResult",
+    "DrainRunResult",
     "IngestionResult",
     "IngestionService",
     "JobDiscoveryWorker",
@@ -30,6 +39,7 @@ __all__ = [
     "NormalizedJob",
     "ProfileReevaluationWorker",
     "ProfileUpdateService",
+    "PromotionStatus",
     "ReevaluationCandidate",
     "ReevaluationRunResult",
 ]
