@@ -1,40 +1,63 @@
-"""Scheduler and monitoring orchestrator for career site ingestion."""
+"""Scheduler and monitoring orchestrator for career site ingestion and M5 background pipeline."""
 
 import asyncio
 import logging
 import random
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.database.session import async_session_factory
+from app.models.outbox import SystemDrainState
 from app.repositories.company_repo import CompanyRepository
 from app.repositories.scan_state_repo import ScanStateRepository
 from app.scrapers.exceptions import RateLimitError, ScraperError
 from app.scrapers.registry import ScraperRegistry
 from app.scrapers.registry import registry as default_registry
+from app.services.backlog_drain_worker import BacklogDrainWorker, DrainRunResult
+from app.services.discovery_worker import DiscoveryRunResult, JobDiscoveryWorker
 from app.services.ingestion_service import IngestionResult, IngestionService
+from app.services.reevaluation_worker import ProfileReevaluationWorker, ReevaluationRunResult
 
 logger = logging.getLogger(__name__)
 
+# Stable APScheduler Job IDs for M5 background workers
+DISCOVERY_JOB_ID = "job_discovery"
+REEVALUATION_JOB_ID = "profile_reevaluation"
+BACKLOG_DRAIN_JOB_ID = "backlog_drain"
+
 
 class MonitoringOrchestrator:
-    """Platform-neutral scheduler and orchestrator for automated career-site scans."""
+    """Platform-neutral scheduler and orchestrator for career scans and M5 pipeline workers."""
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession] = async_session_factory,
         registry: ScraperRegistry | None = None,
         scheduler: AsyncIOScheduler | None = None,
+        discovery_worker: JobDiscoveryWorker | None = None,
+        reevaluation_worker: ProfileReevaluationWorker | None = None,
+        drain_worker: BacklogDrainWorker | None = None,
         default_interval_minutes: int = 30,
         stale_threshold_seconds: int = 900,
         backoff_factor: float = 2.0,
         max_backoff_minutes: int = 240,
         jitter_range_seconds: tuple[float, float] = (5.0, 30.0),
         stagger_range_seconds: tuple[float, float] = (5.0, 60.0),
+        discovery_interval_seconds: int | None = None,
+        reevaluation_interval_seconds: int | None = None,
+        drain_interval_seconds: int | None = None,
+        discovery_batch_size: int | None = None,
+        reevaluation_chunk_size: int | None = None,
+        drain_batch_size: int | None = None,
+        scheduler_misfire_grace_time_seconds: int | None = None,
+        enable_pipeline_jobs: bool = True,
     ) -> None:
         self.session_factory = session_factory
         self.scraper_registry = registry or default_registry
@@ -46,8 +69,65 @@ class MonitoringOrchestrator:
         self.jitter_range_seconds = jitter_range_seconds
         self.stagger_range_seconds = stagger_range_seconds
 
+        # M5 pipeline intervals and batch sizing
+        self.discovery_interval_seconds = (
+            discovery_interval_seconds
+            if discovery_interval_seconds is not None
+            else settings.discovery_interval_seconds
+        )
+        self.reevaluation_interval_seconds = (
+            reevaluation_interval_seconds
+            if reevaluation_interval_seconds is not None
+            else settings.reevaluation_interval_seconds
+        )
+        self.drain_interval_seconds = (
+            drain_interval_seconds
+            if drain_interval_seconds is not None
+            else settings.drain_interval_seconds
+        )
+
+        self.discovery_batch_size = (
+            discovery_batch_size
+            if discovery_batch_size is not None
+            else settings.discovery_batch_size
+        )
+        self.reevaluation_chunk_size = (
+            reevaluation_chunk_size
+            if reevaluation_chunk_size is not None
+            else settings.reevaluation_chunk_size
+        )
+        self.drain_batch_size = (
+            drain_batch_size if drain_batch_size is not None else settings.drain_batch_size
+        )
+
+        self.scheduler_misfire_grace_time_seconds = (
+            scheduler_misfire_grace_time_seconds
+            if scheduler_misfire_grace_time_seconds is not None
+            else settings.scheduler_misfire_grace_time_seconds
+        )
+        self.enable_pipeline_jobs = enable_pipeline_jobs
+
+        # Worker instances
+        self.discovery_worker = discovery_worker or JobDiscoveryWorker(
+            session_factory=self.session_factory,
+            batch_size=self.discovery_batch_size,
+        )
+        self.reevaluation_worker = reevaluation_worker or ProfileReevaluationWorker(
+            session_factory=self.session_factory,
+            chunk_size=self.reevaluation_chunk_size,
+        )
+        self.drain_worker = drain_worker or BacklogDrainWorker(
+            session_factory=self.session_factory,
+            batch_size=self.drain_batch_size,
+        )
+
         # Per-company in-process lock to prevent overlapping runs within the same instance
         self._company_locks: dict[int, asyncio.Lock] = {}
+
+        # In-process locks for M5 workers to guarantee max_instances=1 in event loop
+        self._discovery_lock = asyncio.Lock()
+        self._reevaluation_lock = asyncio.Lock()
+        self._drain_lock = asyncio.Lock()
 
     def _get_company_lock(self, company_id: int) -> asyncio.Lock:
         """Retrieve or create an asyncio.Lock for a specific company."""
@@ -61,30 +141,60 @@ class MonitoringOrchestrator:
         return bool(self.scheduler.running)
 
     async def start(self) -> None:
-        """Start the scheduler, recover stale scans, and synchronize active company jobs."""
+        """Start scheduler, initialize drain state, recover scans, and register jobs."""
         if not self.is_running:
             logger.info("Starting MonitoringOrchestrator scheduler...")
             self.scheduler.start()
         else:
             logger.debug("MonitoringOrchestrator is already running.")
 
-        # 1. Recover any scans left in RUNNING state prior to startup
+        # 1. Ensure SystemDrainState initialization is valid
+        await self._ensure_system_drain_state()
+
+        # 2. Recover any scans left in RUNNING state prior to startup
         recovered_count = await self.recover_stale_scans()
         if recovered_count > 0:
             logger.info("Startup recovery reset %d stale scans.", recovered_count)
 
-        # 2. Synchronize company schedules
+        # 3. Register background pipeline worker jobs
+        if self.enable_pipeline_jobs:
+            self.register_pipeline_jobs()
+
+        # 4. Synchronize company schedules
         await self.sync_company_schedules()
 
     async def shutdown(self, wait: bool = True) -> None:
-        """Gracefully shut down the scheduler."""
+        """Gracefully shut down scheduler and wait for in-flight executions."""
         if self.is_running:
             logger.info("Shutting down MonitoringOrchestrator scheduler (wait=%s)...", wait)
             self.scheduler.shutdown(wait=wait)
             # Yield to event loop to allow AsyncIOScheduler callback to execute
             await asyncio.sleep(0)
+
+            if wait:
+                # Wait for any active in-flight worker executions to complete cleanly
+                for lock_name, lock in [
+                    ("JobDiscoveryWorker", self._discovery_lock),
+                    ("ProfileReevaluationWorker", self._reevaluation_lock),
+                    ("BacklogDrainWorker", self._drain_lock),
+                ]:
+                    if lock.locked():
+                        logger.info("Waiting for in-flight %s execution to finish...", lock_name)
+                        async with lock:
+                            pass
         else:
             logger.debug("MonitoringOrchestrator scheduler is not running; shutdown skipped.")
+
+    async def _ensure_system_drain_state(self) -> None:
+        """Validate or initialize the singleton SystemDrainState row."""
+        try:
+            async with self.session_factory() as session:
+                await session.execute(text("BEGIN IMMEDIATE"))
+                await SystemDrainState.get_or_create(session)
+                await session.commit()
+            logger.info("SystemDrainState validated and initialized successfully.")
+        except Exception as exc:
+            logger.warning("Could not initialize SystemDrainState on startup: %s", exc)
 
     async def recover_stale_scans(self) -> int:
         """Identify and recover any scans stuck in RUNNING status past the timeout threshold."""
@@ -96,6 +206,225 @@ class MonitoringOrchestrator:
             await session.commit()
             return count
 
+    # =========================================================================
+    # M5 PIPELINE JOBS REGISTRATION & EXECUTION
+    # =========================================================================
+
+    def register_pipeline_jobs(self) -> None:
+        """Register recurring background pipeline worker jobs in APScheduler."""
+        # 1. Job Discovery Worker
+        self.scheduler.add_job(
+            func=self.run_discovery_worker,
+            id=DISCOVERY_JOB_ID,
+            name="Job Discovery Worker",
+            trigger=IntervalTrigger(seconds=self.discovery_interval_seconds, timezone="UTC"),
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
+        )
+        logger.info(
+            "Registered scheduled job '%s' (%ds interval)",
+            DISCOVERY_JOB_ID,
+            self.discovery_interval_seconds,
+        )
+
+        # 2. Profile Reevaluation Worker
+        self.scheduler.add_job(
+            func=self.run_reevaluation_worker,
+            id=REEVALUATION_JOB_ID,
+            name="Profile Reevaluation Worker",
+            trigger=IntervalTrigger(seconds=self.reevaluation_interval_seconds, timezone="UTC"),
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
+        )
+        logger.info(
+            "Registered scheduled job '%s' (%ds interval)",
+            REEVALUATION_JOB_ID,
+            self.reevaluation_interval_seconds,
+        )
+
+        # 3. Backlog Drain Worker
+        self.scheduler.add_job(
+            func=self.run_backlog_drain_worker,
+            id=BACKLOG_DRAIN_JOB_ID,
+            name="Backlog Drain Worker",
+            trigger=IntervalTrigger(seconds=self.drain_interval_seconds, timezone="UTC"),
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
+        )
+        logger.info(
+            "Registered scheduled job '%s' (%ds interval)",
+            BACKLOG_DRAIN_JOB_ID,
+            self.drain_interval_seconds,
+        )
+
+    async def run_discovery_worker(self) -> DiscoveryRunResult | None:
+        """Execute one cycle of JobDiscoveryWorker with lock isolation and observability."""
+        lock = self._discovery_lock
+        if lock.locked():
+            logger.warning("JobDiscoveryWorker is already running locally. Skipping execution.")
+            return None
+
+        async with lock:
+            worker_name = "JobDiscoveryWorker"
+            start_time = datetime.now(UTC)
+            start_perf = time.perf_counter()
+            logger.info("Starting %s at %s", worker_name, start_time.isoformat())
+            try:
+                result = await self.discovery_worker.run_once()
+                duration = time.perf_counter() - start_perf
+                logger.info(
+                    "Completed %s in %.3fs: claimed=%d, evaluated=%d, matches=%d, "
+                    "processed=%d, failed=%d, stale_skips=%d",
+                    worker_name,
+                    duration,
+                    result.claimed_count,
+                    result.evaluated_jobs,
+                    result.candidate_matches,
+                    result.processed_outbox_count,
+                    result.failed_outbox_count,
+                    result.stale_lease_skips,
+                )
+                return result
+            except Exception as exc:
+                duration = time.perf_counter() - start_perf
+                logger.exception("Error executing %s after %.3fs: %s", worker_name, duration, exc)
+                return None
+
+    async def run_reevaluation_worker(self) -> ReevaluationRunResult | None:
+        """Execute one cycle of ProfileReevaluationWorker with lock isolation and observability."""
+        lock = self._reevaluation_lock
+        if lock.locked():
+            logger.warning(
+                "ProfileReevaluationWorker is already running locally. Skipping execution."
+            )
+            return None
+
+        async with lock:
+            worker_name = "ProfileReevaluationWorker"
+            start_time = datetime.now(UTC)
+            start_perf = time.perf_counter()
+            logger.info("Starting %s at %s", worker_name, start_time.isoformat())
+            try:
+                result = await self.reevaluation_worker.run_once()
+                duration = time.perf_counter() - start_perf
+                logger.info(
+                    "Completed %s in %.3fs: tasks_claimed=%d, chunks_processed=%d, "
+                    "jobs_evaluated=%d, candidates_created=%d, tasks_completed=%d, "
+                    "tasks_failed=%d, tasks_superseded=%d, stale_skips=%d",
+                    worker_name,
+                    duration,
+                    result.tasks_claimed,
+                    result.chunks_processed,
+                    result.jobs_evaluated,
+                    result.candidates_created,
+                    result.tasks_completed,
+                    result.tasks_failed,
+                    result.tasks_superseded,
+                    result.stale_lease_skips,
+                )
+                return result
+            except Exception as exc:
+                duration = time.perf_counter() - start_perf
+                logger.exception("Error executing %s after %.3fs: %s", worker_name, duration, exc)
+                return None
+
+    async def run_backlog_drain_worker(self) -> DrainRunResult | None:
+        """Execute one cycle of BacklogDrainWorker with lock isolation and observability."""
+        lock = self._drain_lock
+        if lock.locked():
+            logger.warning("BacklogDrainWorker is already running locally. Skipping execution.")
+            return None
+
+        async with lock:
+            worker_name = "BacklogDrainWorker"
+            start_time = datetime.now(UTC)
+            start_perf = time.perf_counter()
+            logger.info("Starting %s at %s", worker_name, start_time.isoformat())
+            try:
+                result = await self.drain_worker.run_once()
+                duration = time.perf_counter() - start_perf
+                logger.info(
+                    "Completed %s in %.3fs: claimed=%d, promoted=%d, already_promoted=%d, "
+                    "stale_revision=%d, dropped=%d, stale_skips=%d, failed=%d, final_counter=%d",
+                    worker_name,
+                    duration,
+                    result.claimed_count,
+                    result.promoted_count,
+                    result.already_promoted_count,
+                    result.stale_revision_count,
+                    result.dropped_count,
+                    result.stale_lease_skips,
+                    result.failed_count,
+                    result.final_drain_counter,
+                )
+                return result
+            except Exception as exc:
+                duration = time.perf_counter() - start_perf
+                logger.exception("Error executing %s after %.3fs: %s", worker_name, duration, exc)
+                return None
+
+    async def trigger_discovery_now(self) -> DiscoveryRunResult | None:
+        """Trigger an immediate out-of-band discovery run."""
+        logger.info("Manually triggering immediate JobDiscoveryWorker run")
+        return await self.run_discovery_worker()
+
+    async def trigger_reevaluation_now(self) -> ReevaluationRunResult | None:
+        """Trigger an immediate out-of-band profile reevaluation run."""
+        logger.info("Manually triggering immediate ProfileReevaluationWorker run")
+        return await self.run_reevaluation_worker()
+
+    async def trigger_backlog_drain_now(self) -> DrainRunResult | None:
+        """Trigger an immediate out-of-band backlog drain run."""
+        logger.info("Manually triggering immediate BacklogDrainWorker run")
+        return await self.run_backlog_drain_worker()
+
+    def pause_pipeline_job(self, job_id: str) -> bool:
+        """Pause a scheduled pipeline job by its stable ID."""
+        job = self.scheduler.get_job(job_id)
+        if job:
+            job.pause()
+            logger.info("Paused scheduled pipeline job %s", job_id)
+            return True
+        return False
+
+    def resume_pipeline_job(self, job_id: str) -> bool:
+        """Resume a paused scheduled pipeline job by its stable ID."""
+        job = self.scheduler.get_job(job_id)
+        if job:
+            job.resume()
+            logger.info("Resumed scheduled pipeline job %s", job_id)
+            return True
+        return False
+
+    def get_pipeline_status(self) -> dict[str, Any]:
+        """Retrieve runtime schedule status of all M5 pipeline worker jobs."""
+        status: dict[str, Any] = {}
+        for job_id, key in [
+            (DISCOVERY_JOB_ID, "discovery"),
+            (REEVALUATION_JOB_ID, "reevaluation"),
+            (BACKLOG_DRAIN_JOB_ID, "backlog_drain"),
+        ]:
+            job = self.scheduler.get_job(job_id)
+            status[key] = {
+                "job_id": job_id,
+                "scheduled": job is not None,
+                "next_run_time": (
+                    job.next_run_time.isoformat() if job and job.next_run_time else None
+                ),
+                "paused": getattr(job, "next_run_time", None) is None if job else None,
+            }
+        return status
+
+    # =========================================================================
+    # EXISTING COMPANY SCAN SCHEDULING (PRESERVED)
+    # =========================================================================
+
     def compute_next_run(
         self,
         base_interval_minutes: int,
@@ -106,7 +435,6 @@ class MonitoringOrchestrator:
         if consecutive_failures <= 0:
             total_minutes = float(base_interval_minutes)
         else:
-            # 1st failure uses base interval; 2nd failure doubles, etc.
             exponent = max(0, consecutive_failures - 1)
             total_minutes = min(
                 base_interval_minutes * (self.backoff_factor**exponent),
@@ -136,12 +464,9 @@ class MonitoringOrchestrator:
                 )
                 interval = state.scan_interval_minutes
 
-                # Determine initial run time (staggered to prevent thundering herd)
                 existing_job = self.scheduler.get_job(job_id)
                 if existing_job is None:
-                    # Respect future next_scan_at if valid, otherwise stagger
                     if state.next_scan_at is not None:
-                        # Make timezone-aware if SQLite returned naive
                         next_at = (
                             state.next_scan_at.replace(tzinfo=UTC)
                             if state.next_scan_at.tzinfo is None
@@ -202,7 +527,6 @@ class MonitoringOrchestrator:
         """Execute a single scan for a company with lock isolation and state management."""
         lock = self._get_company_lock(company_id)
 
-        # In-process concurrency guard: skip if already running on this worker
         if lock.locked():
             logger.warning(
                 "Scan for company %d is already running locally in this process. Skipping.",
@@ -230,7 +554,6 @@ class MonitoringOrchestrator:
                     company_id, scan_interval_minutes=self.default_interval_minutes
                 )
 
-                # Guard against concurrent multi-process execution or stale run
                 now = datetime.now(UTC)
                 if state.status == "RUNNING" and state.last_scan_started_at is not None:
                     started_at = (
@@ -270,7 +593,6 @@ class MonitoringOrchestrator:
                     result = await service.ingest_company(company_id)
                     await ing_session.commit()
 
-                # Determine if the run was a success or failure
                 if (
                     result.failed_records > 0
                     and result.total_fetched == 0

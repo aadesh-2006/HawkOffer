@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     database_url: str | None = None
     db_echo: bool = False
 
+    # M5 Background Pipeline Scheduling
+    discovery_interval_seconds: int = 30
+    reevaluation_interval_seconds: int = 60
+    drain_interval_seconds: int = 15
+
+    discovery_batch_size: int = 50
+    reevaluation_chunk_size: int = 50
+    drain_batch_size: int = 50
+
+    scheduler_misfire_grace_time_seconds: int = 60
+    scheduler_max_instances: int = 1
+
     def get_data_dir(self, create: bool = False) -> Path:
         """Resolve the cross-platform application data directory."""
         if self.data_dir:
