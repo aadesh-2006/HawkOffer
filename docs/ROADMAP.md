@@ -8,14 +8,15 @@ This document outlines the phased development roadmap for **HawkOffer**. Each mi
 
 ```mermaid
 flowchart LR
-    M0["M0: Architecture & Foundation (Current)"] --> M1["M1: Core Models & SQLite Persistence"]
+    M0["M0: Architecture & Foundation"] --> M1["M1: Core Models & SQLite Persistence"]
     M1 --> M2["M2: Scraper Adapters & Normalizer"]
     M2 --> M3["M3: Deduplication & Change Detection"]
-    M3 --> M4["M4: APScheduler & Windows Toasts"]
-    M4 --> M5["M5: FastAPI Daemon & REST Service"]
-    M5 --> M6["M6: React Dashboard & Tauri Shell"]
-    M6 --> M7["M7: Integration & Desktop Packaging"]
-    M7 --> M8["M8: AI Matching Engine (Phase 2)"]
+    M3 --> M4["M4: APScheduler & Multi-Attribute Filtering"]
+    M4 --> M5["M5: Outbox, Keyset Reeval & Fair Drain Pipeline"]
+    M5 --> M6["M6: Backend API & Application Runtime (Completed)"]
+    M6 --> M7["M7: React Dashboard UI & Tauri Shell"]
+    M7 --> M8["M8: Windows Packaging & Native Desktop System Tray"]
+    M8 --> M9["M9: Local AI Semantic Resume Matching"]
 ```
 
 ---
@@ -128,7 +129,31 @@ flowchart LR
 
 ---
 
-### Milestone 6: React + Vite + TypeScript Desktop Dashboard
+### Milestone 6: Backend API & Application Runtime Integration (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Exposing the complete M0–M5 backend via a clean, stable local REST API and establishing the application runtime for future Tauri + React desktop consumers.
+- **Tasks**:
+  1. Implement FastAPI application factory (`app.main:create_app`) with configurable lifespan management, startup DB verification, orchestrator coordination, and graceful teardown.
+  2. Configure localhost-only security boundaries and strict CORS origins (`http://127.0.0.1:1420`, `http://localhost:1420`, `http://127.0.0.1:5173`, `http://localhost:5173`, `tauri://localhost`).
+  3. Implement standardized error handling (400 for `ValueError`, 409 for `IntegrityError`, 404 for missing resources, 503 for closed gates).
+  4. Build REST API v1 router modules:
+     - `system`: `/api/v1/health` and `/api/v1/system/status`.
+     - `companies`: CRUD, pagination, `/activate`, `/deactivate`, on-demand `/trigger`, and `/scan-state`.
+     - `profiles`: CRUD, `/activate`, `/deactivate`, integrating `ProfileUpdateService` to preserve revision increments and reevaluation tasks.
+     - `jobs`: Paginated listings with search and multi-parameter filtering (`company_id`, `status`, `job_type`, `employment_type`, `graduation_year`).
+     - `notifications`: Paginated feeds, unread badges (`/unread-count`), lifecycle mutations (`/read`, `/unread`, `/dismiss`, `/restore`), and batch actions (`/batch/read`, `/batch/dismiss`).
+     - `monitoring`: Pipeline and scheduler runtime status, out-of-band triggers for discovery, reevaluation, and drain workers, and pause/resume controls.
+  5. Add repository pagination and scalar count helpers (`list_paginated`, `count_companies`, `count_filtered`, `count_notifications`) to eliminate full table in-memory scans.
+  6. Author comprehensive automated tests for lifespan, CORS, and all API endpoints (`tests/test_app_lifespan.py`, `tests/test_api_v1.py`).
+- **Acceptance Criteria**:
+  - All 284 backend tests pass with zero failures.
+  - Strict static type checking (`mypy`) passes with zero errors in strict mode across 82 source files.
+  - Linting and formatting (`ruff`) pass with zero violations.
+  - Preserves M5 Phase 3 outbox, keyset reevaluation, and fairness-aware drain semantics.
+
+---
+
+### Milestone 7: React + Vite + TypeScript Desktop Dashboard & Tauri Shell
 - **Focus**: Modern, responsive user interface for managing targets, viewing discovered jobs, and configuring preferences.
 - **Tasks**:
   1. Scaffold frontend project using React, Vite, TypeScript, and TailwindCSS / component library.
@@ -144,7 +169,7 @@ flowchart LR
 
 ---
 
-### Milestone 7: Tauri Integration, Background Service & Windows Packaging
+### Milestone 8: Windows Packaging, System Tray & Installer
 - **Focus**: Desktop shell packaging, system tray integration, and installer creation.
 - **Tasks**:
   1. Set up Tauri project with Rust runtime wrapping the React frontend.
@@ -159,7 +184,7 @@ flowchart LR
 
 ---
 
-### Milestone 8: AI-Powered Job & Resume Matching (Phase 2)
+### Milestone 9: AI-Powered Job & Resume Matching (Phase 2)
 - **Focus**: Semantic job scoring, resume parsing, and personalized match recommendations.
 - **Tasks**:
   1. Implement `ResumeParser` to extract skills, experience level, and keywords from local PDF/DOCX resumes.

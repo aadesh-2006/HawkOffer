@@ -729,3 +729,97 @@ All critical worker queries leverage SQLite partial indexes to achieve $O(\log N
 - **Local SQLite Concurrency**: Designed for single-desktop execution. Uses `BEGIN IMMEDIATE` transactions to prevent SQLite busy deadlocks during write operations, combined with in-process `asyncio.Lock`s. Does not support multi-process concurrent writers across independent OS processes or clustered nodes.
 - **Outbox Retention**: Outbox records are preserved for the lifecycle of their associated `Job` records to guarantee the exactly-one-outbox-event-per-job invariant.
 - **Downgrade Boundary**: Alembic downgrades below `8de4342be7a1` drop the outbox, backlog, and reevaluation task tables while preserving all user-facing notification history in the `notifications` table.
+
+---
+
+## 11. REST API Architecture & Application Runtime (Milestone 6)
+
+Milestone 6 establishes the local REST API layer that enables a future desktop UI (Tauri + React) to interact with HawkOffer's underlying persistence and monitoring engine.
+
+```mermaid
+graph TD
+    subgraph DesktopClient ["Desktop Client (Tauri + React)"]
+        UIApp["Vite / Tauri Shell<br/>(localhost:1420 / tauri://localhost)"]
+    end
+
+    subgraph FastAPIRuntime ["FastAPI Local Runtime (app.main:app)"]
+        CORS["Strict CORSMiddleware<br/>(No Wildcards)"]
+        Lifespan["ASGI Lifespan Manager<br/>(Startup & Shutdown Hooks)"]
+        Router["/api/v1 Router"]
+    end
+
+    subgraph APIRoutes ["REST API Endpoints"]
+        SystemRoute["/system & /health"]
+        CompaniesRoute["/companies"]
+        ProfilesRoute["/profiles"]
+        JobsRoute["/jobs"]
+        NotifsRoute["/notifications"]
+        MonitoringRoute["/monitoring"]
+    end
+
+    subgraph CoreServices ["Backend Engine & Services"]
+        Orchestrator["MonitoringOrchestrator"]
+        ProfileService["ProfileUpdateService"]
+        DBEngine["AsyncEngine (SQLite WAL)"]
+    end
+
+    UIApp -->|HTTP JSON Requests| CORS
+    CORS --> Router
+    Router --> SystemRoute
+    Router --> CompaniesRoute
+    Router --> ProfilesRoute
+    Router --> JobsRoute
+    Router --> NotifsRoute
+    Router --> MonitoringRoute
+
+    Lifespan -->|Manages Lifecycle| Orchestrator
+    Lifespan -->|Manages Pool| DBEngine
+    ProfilesRoute -->|Preserves M5 Semantics| ProfileService
+    MonitoringRoute -->|Triggers & Controls| Orchestrator
+```
+
+### 11.1 Application Composition & Lifespan Management
+
+The application runtime is constructed using a factory pattern (`app.main:create_app`) with explicit dependency injection for test isolation:
+
+1. **Startup Lifecycle (`@asynccontextmanager lifespan`)**:
+   - **Database Schema Validation**: If `init_database=True`, runs `init_db()` to create or verify SQLite tables.
+   - **Session Factory Configuration**: Attaches the async sessionmaker to `app.state.session_factory`.
+   - **Orchestrator Startup**: If `start_scheduler=True`, starts the `MonitoringOrchestrator`. It validates prerequisites (`SystemDrainState(id=1)`, stale scan recovery, company schedules) and opens the lifecycle gate only after scheduler startup succeeds.
+2. **Graceful Shutdown**:
+   - Waits for active startup tasks, closes worker gates, stops APScheduler, and cleanly drains in-flight workers.
+   - Disposes the SQLAlchemy engine connection pool (`engine.dispose()`).
+
+### 11.2 Security & Network Isolation
+
+- **Localhost Binding**: The REST service binds strictly to `127.0.0.1` (or Windows loopback) and does not listen on `0.0.0.0`.
+- **Restricted CORS Policy**: Wildcard origins (`*`) are disallowed. Only designated Tauri and Vite developer origins are whitelisted:
+  - `http://127.0.0.1:1420` & `http://localhost:1420` (Tauri dev server)
+  - `http://127.0.0.1:5173` & `http://localhost:5173` (Vite dev server)
+  - `tauri://localhost` (Production Tauri webview origin)
+
+### 11.3 Router Subsystems & Behavior
+
+1. **System & Health (`/api/v1/health`, `/api/v1/system/status`)**:
+   - Diagnostic checks verifying database responsiveness (`SELECT 1`) and orchestrator running state.
+   - Aggregated entity counts (companies, jobs, unread notifications) and pipeline scheduling status.
+2. **Companies (`/api/v1/companies`)**:
+   - Full CRUD lifecycle with URL validation and duplicate detection (409 Conflict).
+   - Activation and deactivation endpoints that immediately re-synchronize scheduler company jobs.
+   - Out-of-band scan trigger (`POST /{id}/trigger`) with lifecycle gate enforcement.
+3. **Preference Profiles (`/api/v1/profiles`)**:
+   - Full CRUD for user preference filters.
+   - **Critical Revision Preservation**: Profile modifications route through `ProfileUpdateService.update_profile(profile_id, payload)`. This preserves M5 Phase 3 guarantees: incrementing `revision += 1`, invalidating queued backlog entries as `STALE`, superseding pending reevaluations, and scheduling a new keyset `ProfileReevaluationTask`.
+4. **Jobs (`/api/v1/jobs`)**:
+   - Paginated job discovery queries with dynamic filtering by `company_id`, `status`, `job_type`, `employment_type`, `graduation_year`, and case-insensitive keyword search.
+   - Fast scalar counting (`select(func.count()).select_from(Job)`) avoiding memory overhead.
+5. **Notifications (`/api/v1/notifications`)**:
+   - Paginated alert feeds with filter toggles (`include_dismissed`, `status`, `profile_id`).
+   - Idempotent state transitions: `/read`, `/unread`, `/dismiss`, `/restore`.
+   - Batch operations (`/batch/read`, `/batch/dismiss`) for bulk UI actions.
+   - Real-time unread badge count (`/unread-count`).
+6. **Monitoring & Pipeline (`/api/v1/monitoring`)**:
+   - Worker triggers for manual pipeline runs: discovery, historical reevaluation, and backlog drain.
+   - Scheduler pause and resume endpoints for individual background worker jobs or target company scans.
+   - Rejection reporting when orchestrator is shutting down or unavailable.
+

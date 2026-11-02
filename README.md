@@ -83,9 +83,10 @@ HawkOffer is being built incrementally, milestone by milestone:
   - [x] Phase 1: Local FastAPI REST Service Layer
   - [x] Phase 2: User-Facing Notification Delivery Lifecycle & Status Tracking
   - [x] Phase 3: Transactional Outbox, Keyset Reevaluation & Fair Backlog Drain Pipeline
-- [ ] **Milestone 6: React Desktop Dashboard & Settings UI**
-- [ ] **Milestone 7: Tauri Integration, System Tray & Windows Packaging**
-- [ ] **Milestone 8: AI-Powered Resume & Job Semantic Matching**
+- [x] **Milestone 6: Backend API & Application Runtime Integration**
+- [ ] **Milestone 7: React Desktop Dashboard & Settings UI (Tauri Shell)**
+- [ ] **Milestone 8: Windows Packaging, System Tray & Native Installer**
+- [ ] **Milestone 9: AI-Powered Resume & Job Semantic Matching**
 
 For detailed task breakdowns and acceptance criteria, see [docs/ROADMAP.md](docs/ROADMAP.md).
 

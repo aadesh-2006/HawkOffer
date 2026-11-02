@@ -81,6 +81,66 @@ Or using the virtualenv directly:
 
 ---
 
+## 🌐 Running the FastAPI REST Daemon
+
+To start the local REST daemon serving the Tauri desktop application:
+
+```bash
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+Or using the virtualenv directly:
+
+```bash
+.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+Once running:
+- **Interactive OpenAPI UI**: [http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs)
+- **ReDoc Documentation**: [http://127.0.0.1:8765/redoc](http://127.0.0.1:8765/redoc)
+- **Health Check**: [http://127.0.0.1:8765/api/v1/health](http://127.0.0.1:8765/api/v1/health)
+
+### API v1 Surface Overview
+
+| Resource | Method & Path | Description |
+| :--- | :--- | :--- |
+| **System** | `GET /api/v1/health` | Subsystem connectivity and scheduler health |
+| | `GET /api/v1/system/status` | Metrics, entity counts, and worker job status |
+| **Companies** | `GET /api/v1/companies` | Paginated company targets list |
+| | `POST /api/v1/companies` | Register a new career portal target |
+| | `GET /api/v1/companies/{id}` | Single company details |
+| | `PATCH /api/v1/companies/{id}` | Update company settings |
+| | `POST /api/v1/companies/{id}/activate` | Enable automated background scanning |
+| | `POST /api/v1/companies/{id}/deactivate` | Disable automated background scanning |
+| | `POST /api/v1/companies/{id}/trigger` | Immediate on-demand scrape and ingestion |
+| | `GET /api/v1/companies/{id}/scan-state` | Persistent scheduler state and error log |
+| | `DELETE /api/v1/companies/{id}` | Delete company and clean up schedules |
+| **Profiles** | `GET /api/v1/profiles` | List user preference profiles |
+| | `POST /api/v1/profiles` | Create preference profile |
+| | `GET /api/v1/profiles/{id}` | Single profile details |
+| | `PATCH /api/v1/profiles/{id}` | Update profile (increments revision, enqueues reeval) |
+| | `POST /api/v1/profiles/{id}/activate` | Activate preference profile |
+| | `POST /api/v1/profiles/{id}/deactivate` | Deactivate preference profile |
+| | `DELETE /api/v1/profiles/{id}` | Delete preference profile |
+| **Jobs** | `GET /api/v1/jobs` | Paginated listings with search & dynamic filters |
+| | `GET /api/v1/jobs/{id}` | Full job details |
+| **Notifications** | `GET /api/v1/notifications` | Paginated user alerts |
+| | `GET /api/v1/notifications/unread-count` | Real-time badge counter |
+| | `POST /api/v1/notifications/{id}/read` | Mark alert as READ |
+| | `POST /api/v1/notifications/{id}/unread` | Mark alert as UNREAD |
+| | `POST /api/v1/notifications/{id}/dismiss` | Dismiss alert |
+| | `POST /api/v1/notifications/{id}/restore` | Restore dismissed alert |
+| | `POST /api/v1/notifications/batch/read` | Batch mark as READ |
+| | `POST /api/v1/notifications/batch/dismiss` | Batch dismiss alerts |
+| **Monitoring** | `GET /api/v1/monitoring/status` | Detailed scheduler & pipeline status |
+| | `POST /api/v1/monitoring/discovery/trigger` | Trigger JobDiscoveryWorker outbox sweep |
+| | `POST /api/v1/monitoring/reevaluation/trigger` | Trigger ProfileReevaluationWorker |
+| | `POST /api/v1/monitoring/drain/trigger` | Trigger BacklogDrainWorker promotion |
+| | `POST /api/v1/monitoring/pause` | Pause worker job or company scan |
+| | `POST /api/v1/monitoring/resume` | Resume worker job or company scan |
+
+---
+
 ## 🗄️ Database Migrations with Alembic
 
 To generate a new migration after model changes:
