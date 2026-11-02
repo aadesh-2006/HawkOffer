@@ -694,3 +694,224 @@ async def test_pause_and_resume_pipeline_jobs(
 
     finally:
         await orchestrator.shutdown(wait=False)
+
+
+# =============================================================================
+# 5. STARTUP LIFECYCLE GATE TESTS (UNIT 7.2)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_manual_worker_triggers_rejected_while_startup_in_progress(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+    mock_reevaluation_worker: AsyncMock,
+    mock_drain_worker: AsyncMock,
+) -> None:
+    """Verify manual worker triggers are rejected while startup is blocked at an async step."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+        reevaluation_worker=mock_reevaluation_worker,
+        drain_worker=mock_drain_worker,
+    )
+
+    prerequisite_reached = asyncio.Event()
+    unblock_prerequisite = asyncio.Event()
+
+    original_sync = orchestrator.sync_company_schedules
+
+    async def blocking_sync() -> None:
+        prerequisite_reached.set()
+        await unblock_prerequisite.wait()
+        await original_sync()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_task = asyncio.create_task(orchestrator.start())
+        try:
+            await prerequisite_reached.wait()
+
+            # Startup is in progress; lifecycle gate must be closed and scheduler not running
+            assert orchestrator.is_running is False
+            assert orchestrator.is_lifecycle_gate_open is False
+            assert orchestrator._is_shutting_down is True
+
+            # All manual triggers must be rejected while startup is blocked
+            assert await orchestrator.trigger_discovery_now() is None
+            assert await orchestrator.trigger_reevaluation_now() is None
+            assert await orchestrator.trigger_backlog_drain_now() is None
+            assert await orchestrator.trigger_scan_now(1) is None
+
+            # None of the workers should have been invoked
+            mock_discovery_worker.run_once.assert_not_called()
+            mock_reevaluation_worker.run_once.assert_not_called()
+            mock_drain_worker.run_once.assert_not_called()
+
+            # Unblock prerequisite and allow startup to complete
+            unblock_prerequisite.set()
+            await start_task
+
+            # Gate must now be open and scheduler running
+            assert orchestrator.is_running is True
+            assert orchestrator.is_lifecycle_gate_open is True
+            assert orchestrator._is_shutting_down is False
+
+            # Manual triggers now succeed
+            assert await orchestrator.trigger_discovery_now() is not None
+            assert mock_discovery_worker.run_once.call_count == 1
+        finally:
+            unblock_prerequisite.set()
+            if not start_task.done():
+                await start_task
+            await orchestrator.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_company_schedule_sync_failure_leaves_gate_closed_and_scheduler_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify company sync failure leaves gate closed, scheduler stopped, and jobs removed."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    with (
+        patch.object(
+            orchestrator,
+            "sync_company_schedules",
+            side_effect=RuntimeError("Database failure during company schedule sync"),
+        ),
+        pytest.raises(RuntimeError, match="Company schedule startup synchronization failed"),
+    ):
+        await orchestrator.start()
+
+    # Scheduler must be stopped
+    assert orchestrator.is_running is False
+    # Lifecycle gate must remain closed
+    assert orchestrator.is_lifecycle_gate_open is False
+    assert orchestrator._is_shutting_down is True
+    # Partially registered pipeline jobs must be cleared
+    assert len(orchestrator.scheduler.get_jobs()) == 0
+
+    # Manual triggers must be rejected
+    assert await orchestrator.trigger_discovery_now() is None
+    mock_discovery_worker.run_once.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_can_be_retried_safely(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+    mock_reevaluation_worker: AsyncMock,
+    mock_drain_worker: AsyncMock,
+) -> None:
+    """Verify an orchestrator that failed startup can be retried and started successfully."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+        reevaluation_worker=mock_reevaluation_worker,
+        drain_worker=mock_drain_worker,
+    )
+
+    fail_once = True
+    original_sync = orchestrator.sync_company_schedules
+
+    async def flaky_sync() -> None:
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("Transient connection error during schedule sync")
+        await original_sync()
+
+    # First attempt fails
+    with (
+        patch.object(orchestrator, "sync_company_schedules", side_effect=flaky_sync),
+        pytest.raises(RuntimeError, match="Company schedule startup synchronization failed"),
+    ):
+        await orchestrator.start()
+
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+    assert len(orchestrator.scheduler.get_jobs()) == 0
+
+    # Second attempt succeeds (flaky_sync no longer raises)
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=flaky_sync):
+        await orchestrator.start()
+
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+        assert orchestrator.scheduler.get_job(DISCOVERY_JOB_ID) is not None
+        assert orchestrator.scheduler.get_job(REEVALUATION_JOB_ID) is not None
+        assert orchestrator.scheduler.get_job(BACKLOG_DRAIN_JOB_ID) is not None
+
+        result = await orchestrator.trigger_discovery_now()
+        assert result is not None
+    finally:
+        await orchestrator.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_repeated_startup_after_shutdown_succeeds(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify orchestrator can restart cleanly after a previous successful shutdown."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    # First start and clean shutdown
+    await orchestrator.start()
+    assert orchestrator.is_running is True
+    assert orchestrator.is_lifecycle_gate_open is True
+
+    await orchestrator.shutdown(wait=True)
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+
+    # Second start (restart)
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+        assert orchestrator.scheduler.get_job(DISCOVERY_JOB_ID) is not None
+        assert orchestrator.scheduler.get_job(REEVALUATION_JOB_ID) is not None
+        assert orchestrator.scheduler.get_job(BACKLOG_DRAIN_JOB_ID) is not None
+    finally:
+        await orchestrator.shutdown(wait=True)
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_calls_are_idempotent(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify multiple concurrent calls to start() execute safely without duplicate jobs."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    try:
+        await asyncio.gather(
+            orchestrator.start(),
+            orchestrator.start(),
+            orchestrator.start(),
+        )
+
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+
+        # Pipeline jobs must be registered exactly once
+        job_ids = [job.id for job in orchestrator.scheduler.get_jobs()]
+        assert job_ids.count(DISCOVERY_JOB_ID) == 1
+        assert job_ids.count(REEVALUATION_JOB_ID) == 1
+        assert job_ids.count(BACKLOG_DRAIN_JOB_ID) == 1
+    finally:
+        await orchestrator.shutdown(wait=False)
