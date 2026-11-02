@@ -108,19 +108,23 @@ flowchart LR
 
 ---
 
-### Milestone 5: Local FastAPI REST Daemon
-- **Focus**: Exposing core engine controls, settings, and job data over local REST endpoints.
-- **Tasks**:
-  1. Build FastAPI application lifecycle connecting the scheduler, database, and monitoring engine.
-  2. Implement target management endpoints (`/api/targets`): CRUD, manual scrape trigger, adapter autodetection.
-  3. Implement job query endpoints (`/api/jobs`): filtering, search, pagination, bookmarking.
-  4. Implement preference endpoints (`/api/preferences`): manage keywords and target locations.
-  5. Implement system endpoints (`/api/system`): scheduler pause/resume, health check, log viewer.
-  6. Write automated integration tests for all API routes using `httpx.AsyncClient`.
+### Milestone 5: Local FastAPI REST Daemon & Background Processing Pipeline
+- **Status**: Completed (Phase 1, Phase 2, Phase 3 Units 1–8)
+- **Focus**: REST endpoints, notification delivery, and the transactional background processing pipeline.
+- **Phase 3 Units Completed**:
+  - **Unit 1: Data Contracts & Schema Migration**: Alembic revision `8de4342be7a1` adding `revision` to `preference_profiles`, `job_discovery_outbox`, `notification_backlog`, `profile_reevaluation_tasks`, and `system_drain_state`.
+  - **Unit 2: Transactional Outbox Ingestion**: Atomic emission of `JobDiscoveryOutbox` (PENDING) during new job ingestion with idempotency and rollback safety.
+  - **Unit 3: Repository Lifecycle & Backlog Query Optimization**: Direct partial indexes supporting $O(\log N)$ queued and expired candidate claims without temporary b-trees.
+  - **Unit 4: Outbox Discovery Worker**: Three-phase worker architecture (Phase A: `BEGIN IMMEDIATE` claim, Phase B: in-memory profile snapshot filtering, Phase C: fenced commit).
+  - **Unit 5 & 5.1: Profile Revision & Keyset Reevaluation Worker**: Atomic profile revision increment, old backlog row invalidation, and bounded keyset historical reevaluation with asynchronous lease heartbeats and stale-lease fencing.
+  - **Unit 6: Backlog Drain Worker & Modulo-5 Fairness**: Persistent counter sequential allocation (4 relevance slots, 1 FIFO slot with dynamic fallback), atomic candidate claims, and deduplicated notification promotion.
+  - **Unit 7 – 7.5: Scheduler Lifecycle Integration & Hardening**: Unified `MonitoringOrchestrator` lifecycle with closed startup gate, durable shutdown intent, multi-shutdown reference counting (`_active_shutdowns`), and complete admission closure throughout shutdown.
+  - **Unit 8: End-to-End Integration, Documentation & Final Audit**: 14 end-to-end integration tests, full migration and downgrade audits, query plan performance verification, and architecture documentation.
 - **Acceptance Criteria**:
-  - FastAPI server starts locally on `127.0.0.1:8765` with OpenAPI documentation accessible at `/docs`.
-  - All endpoints return typed Pydantic responses and proper HTTP error codes.
-  - Scrape runs can be triggered manually via API and return real-time status.
+  - All 155+ test cases pass with >90% coverage.
+  - Static type checking (`mypy`) passes with zero errors.
+  - Linting and formatting (`ruff`) pass with zero errors.
+  - Migration upgrade and downgrade verified without data loss for user notifications.
 
 ---
 

@@ -480,6 +480,69 @@ erDiagram
    - `created_at`: `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
    - *Index*: `idx_logs_company_date (company_id, created_at DESC)`
 
+6. **`job_discovery_outbox`** (M5 Phase 3):
+   - `id`: `INTEGER PRIMARY KEY AUTOINCREMENT`
+   - `job_id`: `INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE`
+   - `status`: `VARCHAR(20) NOT NULL` (`'PENDING'`, `'PROCESSING'`, `'PROCESSED'`, `'FAILED'`)
+   - `lease_token`: `VARCHAR(36) NULL` (UUIDv4 lease identifier)
+   - `lease_expires_at`: `DATETIME NULL`
+   - `attempt_count`: `INTEGER NOT NULL DEFAULT 0`
+   - `processed_at`: `DATETIME NULL`
+   - `last_error`: `TEXT NULL`
+   - `created_at`: `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
+   - *Indices*:
+     - `ix_job_discovery_outbox_job_id (job_id UNIQUE)`
+     - `ix_job_discovery_outbox_status (status)`
+     - `ix_job_discovery_outbox_lease_token (lease_token)`
+     - `ix_outbox_claim_pending (status, id)` WHERE `status = 'PENDING'`
+     - `ix_outbox_claim_expired (status, lease_expires_at, id)` WHERE `status = 'PROCESSING'`
+
+7. **`notification_backlog`** (M5 Phase 3):
+   - `id`: `INTEGER PRIMARY KEY AUTOINCREMENT`
+   - `job_id`: `INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE`
+   - `profile_id`: `INTEGER NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE`
+   - `profile_revision`: `INTEGER NOT NULL`
+   - `score`: `INTEGER NOT NULL` (0–100 integer matching score)
+   - `status`: `VARCHAR(20) NOT NULL` (`'QUEUED'`, `'PROCESSING'`, `'PROCESSED'`, `'STALE'`, `'DROPPED'`)
+   - `lease_token`: `VARCHAR(36) NULL` (UUIDv4 lease identifier)
+   - `lease_expires_at`: `DATETIME NULL`
+   - `attempt_count`: `INTEGER NOT NULL DEFAULT 0`
+   - `processed_at`: `DATETIME NULL`
+   - `created_at`: `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
+   - *Constraints & Indices*:
+     - `uq_backlog_job_profile_rev UNIQUE (job_id, profile_id, profile_revision)`
+     - `ix_notification_backlog_job_id (job_id)`
+     - `ix_notification_backlog_profile_id (profile_id)`
+     - `ix_notification_backlog_status (status)`
+     - `ix_notification_backlog_lease_token (lease_token)`
+     - `ix_backlog_queued_relevance (score DESC, created_at ASC, id ASC)` WHERE `status = 'QUEUED'`
+     - `ix_backlog_queued_fifo (created_at ASC, id ASC)` WHERE `status = 'QUEUED'`
+     - `ix_backlog_processing_relevance (score DESC, created_at ASC, id ASC)` WHERE `status = 'PROCESSING'`
+     - `ix_backlog_processing_fifo (created_at ASC, id ASC)` WHERE `status = 'PROCESSING'`
+
+8. **`profile_reevaluation_tasks`** (M5 Phase 3):
+   - `id`: `INTEGER PRIMARY KEY AUTOINCREMENT`
+   - `profile_id`: `INTEGER NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE`
+   - `profile_revision`: `INTEGER NOT NULL`
+   - `max_job_id`: `INTEGER NOT NULL` (Frozen upper bound for keyset pagination)
+   - `last_processed_job_id`: `INTEGER NOT NULL DEFAULT 0` (Progress cursor)
+   - `status`: `VARCHAR(20) NOT NULL` (`'PENDING'`, `'RUNNING'`, `'COMPLETED'`, `'SUPERSEDED'`, `'CANCELLED'`)
+   - `attempt_count`: `INTEGER NOT NULL DEFAULT 0`
+   - `lease_token`: `VARCHAR(36) NULL` (UUIDv4 lease identifier)
+   - `lease_expires_at`: `DATETIME NULL`
+   - `completed_at`: `DATETIME NULL`
+   - `last_error`: `TEXT NULL`
+   - `created_at`: `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
+   - *Constraints & Indices*:
+     - `uq_active_task_per_profile UNIQUE (profile_id)` WHERE `status IN ('PENDING', 'RUNNING')`
+     - `ix_profile_reevaluation_tasks_profile_id (profile_id)`
+     - `ix_profile_reevaluation_tasks_status (status)`
+
+9. **`system_drain_state`** (M5 Phase 3):
+   - `id`: `INTEGER PRIMARY KEY` (Singleton row, id=1 enforced)
+   - `drain_counter`: `INTEGER NOT NULL DEFAULT 0`
+   - `updated_at`: `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
+
 ---
 
 ## 6. API Endpoint Proposal (FastAPI Daemon)
@@ -573,3 +636,96 @@ While HawkOffer is built as a **local-first desktop tool**, its modular interfac
 - **Scheduler**: The `APScheduler` runner can be substituted with Celery / Redis or Google Cloud Tasks.
 - **Notifications**: The `NotificationService` interface supports adding Discord webhooks, Telegram bots, or transactional emails alongside desktop toasts.
 - **Multi-Tenancy**: Data models are designed with future `user_id` foreign keys in mind.
+
+---
+
+## 10. M5 Phase 3 Background Processing Pipeline Architecture
+
+Milestone 5 Phase 3 introduces a robust, decoupled, transactional background processing pipeline designed for local concurrency and reliability.
+
+```mermaid
+flowchart TD
+    subgraph Ingestion ["Phase A: Ingestion & Transactional Outbox"]
+        Scraper["Career Scraper"] --> Normalizer["Job Normalizer"]
+        Normalizer -->|Atomic Transaction| IngestTx["IngestionService (begin_nested)"]
+        IngestTx -->|Insert/Update| JobsTable[("jobs")]
+        IngestTx -->|If NEW: Insert| OutboxTable[("job_discovery_outbox (PENDING)")]
+    end
+
+    subgraph Discovery ["Phase B: Discovery Worker"]
+        DiscWorker["JobDiscoveryWorker"] -->|Claim Batch (BEGIN IMMEDIATE)| OutboxTable
+        DiscWorker -->|Read Active Profiles & Snapshot| ProfilesTable[("preference_profiles")]
+        DiscWorker -->|Filter Outside DB Lock| Engine["M4 JobFilteringEngine"]
+        DiscWorker -->|Fenced Commit| BacklogTable[("notification_backlog (QUEUED)")]
+        DiscWorker -->|Mark PROCESSED| OutboxTable
+    end
+
+    subgraph Reeval ["Phase C: Profile Reevaluation Pipeline"]
+        ProfUpdate["ProfileUpdateService"] -->|Meaningful Update (revision+1)| ProfilesTable
+        ProfUpdate -->|Invalidate QUEUED| BacklogTable
+        ProfUpdate -->|Supersede Active Tasks| TaskTable[("profile_reevaluation_tasks")]
+        ProfUpdate -->|Enqueue Task (Frozen max_job_id)| TaskTable
+        ReevalWorker["ProfileReevaluationWorker"] -->|Keyset Pagination| JobsTable
+        ReevalWorker -->|Fenced Commit| BacklogTable
+    end
+
+    subgraph Drain ["Phase D: Backlog Drain & Notification Promotion"]
+        DrainWorker["BacklogDrainWorker"] -->|Modulo-5 Claim (BEGIN IMMEDIATE)| BacklogTable
+        DrainWorker -->|Atomic Counter Advance| DrainState[("system_drain_state")]
+        DrainWorker -->|Verify Revision & Deduplicate| NotifRepo["NotificationRepository"]
+        DrainWorker -->|Promote Atomically| NotifsTable[("notifications (UNREAD)")]
+    end
+
+    subgraph Orchestration ["Phase E: Scheduler Orchestration"]
+        Orchestrator["MonitoringOrchestrator (AsyncIOScheduler)"]
+        Orchestrator --> DiscWorker
+        Orchestrator --> ReevalWorker
+        Orchestrator --> DrainWorker
+    end
+```
+
+### 10.1 Component Responsibilities & Lifecycle
+
+1. **Transactional Outbox Ingestion (`IngestionService`)**:
+   - Ingests normalized job postings from ATS scrapers.
+   - For every genuinely new job, commits both the `Job` record and a corresponding `JobDiscoveryOutbox` record with status `PENDING` inside the same transaction savepoint.
+   - Idempotently prevents duplicate outbox records when existing jobs are refreshed.
+   - If an error occurs, the savepoint rolls back both the `Job` and `JobDiscoveryOutbox` insertions.
+
+2. **Job Discovery Worker (`JobDiscoveryWorker`)**:
+   - **Phase A (Claim)**: Acquires a bounded batch of eligible `PENDING` (or expired `PROCESSING`) outbox records under `BEGIN IMMEDIATE` write lock, stamping each with a unique UUIDv4 `lease_token` and `lease_expires_at`.
+   - **Phase B (Snapshot Evaluation)**: Evaluates current active `PreferenceProfile` records and matches them using `JobFilteringEngine` *outside database write transactions*.
+   - **Phase C (Fenced Commit)**: In an individual write transaction per outbox record, verifies the lease token still matches the worker. If valid, writes matching candidates into `notification_backlog` and marks the outbox record `PROCESSED`. If stale, safely skips the record without overwriting concurrent reclaimers.
+
+3. **Profile Revision & Historical Reevaluation (`ProfileUpdateService` & `ProfileReevaluationWorker`)**:
+   - **Revision Management**: When a user modifies filtering preferences, `ProfileUpdateService` compares existing vs. new criteria. Meaningful updates increment `revision += 1`, mark previous `QUEUED` backlog candidates for that profile as `STALE`, supersede active tasks, and enqueue a new `ProfileReevaluationTask` bound to the frozen `max_job_id`.
+   - **Keyset Pagination**: `ProfileReevaluationWorker` processes historical jobs using ordered keyset pagination (`id > last_processed_job_id AND id <= max_job_id ORDER BY id ASC LIMIT chunk_size`), eliminating offset degradation.
+   - **Heartbeats & Fencing**: Employs an asynchronous heartbeat loop renewing the lease during long-running tasks. Stale lease fencing protects chunk commits and failure recording against stale workers.
+
+4. **Backlog Drain & Notification Promotion (`BacklogDrainWorker`)**:
+   - **Modulo-5 Fairness Algorithm**: Implements sequential slot allocation via a persistent counter stored in singleton `SystemDrainState(id=1)`. Slots 0, 1, 2, and 3 allocate the highest-scoring candidate (`RELEVANCE`), while slot 4 allocates the oldest candidate (`FIFO`). If the primary bucket is empty, it dynamically falls back to the secondary bucket.
+   - **Atomic Allocation**: Candidate selection and counter increment occur atomically under `BEGIN IMMEDIATE`.
+   - **Promotion**: Verifies candidate profile revision against the live profile. If current, promotes the candidate into a user-facing `Notification` record and marks the backlog item `PROCESSED`.
+   - **Deduplication**: Deduplicates against existing notifications for `(profile_id, job_id, notification_type)`, including legacy `DESKTOP_TOAST` aliasing.
+
+5. **Scheduler Integration & Lifecycle Orchestration (`MonitoringOrchestrator`)**:
+   - Single orchestrator owning the primary `AsyncIOScheduler` instance.
+   - **Closed Lifecycle Gate on Startup**: All manual and scheduled worker triggers are rejected until prerequisites (`SystemDrainState` validation, stale scan recovery, company schedules) complete.
+   - **Active Shutdown Tracking (`_active_shutdowns`)**: Reference-counted shutdown tracking guarantees that startup admission remains strictly closed throughout the entire shutdown operation (waiting for startup, stopping scheduler, removing jobs, and draining in-flight workers).
+   - **Cancellation Resilience**: If shutdown is cancelled, APScheduler is stopped (`wait=False`), jobs are cleared, gate remains closed, and generation advances on zero active shutdowns to permit future clean restarts.
+
+### 10.2 Database Indexing & Query Plans
+
+All critical worker queries leverage SQLite partial indexes to achieve $O(\log N)$ lookups with **zero temporary b-trees**:
+- `ix_outbox_claim_pending`: `(status, id)` WHERE `status = 'PENDING'`.
+- `ix_outbox_claim_expired`: `(status, lease_expires_at, id)` WHERE `status = 'PROCESSING'`.
+- `ix_backlog_queued_relevance`: `(score DESC, created_at ASC, id ASC)` WHERE `status = 'QUEUED'`.
+- `ix_backlog_queued_fifo`: `(created_at ASC, id ASC)` WHERE `status = 'QUEUED'`.
+- Keyset Pagination on `jobs`: Direct scan on `INTEGER PRIMARY KEY` (`rowid > :cursor AND rowid <= :max_id`).
+- Notification Deduplication: `uq_notifications_job_profile_type` unique index search.
+
+### 10.3 Known Limitations & Concurrency Boundaries
+
+- **Local SQLite Concurrency**: Designed for single-desktop execution. Uses `BEGIN IMMEDIATE` transactions to prevent SQLite busy deadlocks during write operations, combined with in-process `asyncio.Lock`s. Does not support multi-process concurrent writers across independent OS processes or clustered nodes.
+- **Outbox Retention**: Outbox records are preserved for the lifecycle of their associated `Job` records to guarantee the exactly-one-outbox-event-per-job invariant.
+- **Downgrade Boundary**: Alembic downgrades below `8de4342be7a1` drop the outbox, backlog, and reevaluation task tables while preserving all user-facing notification history in the `notifications` table.

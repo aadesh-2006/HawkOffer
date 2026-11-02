@@ -74,17 +74,70 @@ For complete technical specifications, database schema, and API route definition
 
 HawkOffer is being built incrementally, milestone by milestone:
 
-- [x] **Milestone 0: Architecture & Foundation Design** *(Current)*
-- [ ] **Milestone 1**: Core Data Models & SQLite Persistence Layer
-- [ ] **Milestone 2**: Scraper Adapters (Greenhouse, Lever, Ashby) & Normalization Engine
-- [ ] **Milestone 3**: Playwright Fallback Adapter & Deduplication Engine
-- [ ] **Milestone 4**: Background Scheduler & Windows Native Notifications
-- [ ] **Milestone 5**: FastAPI REST Daemon & Service Layer
-- [ ] **Milestone 6**: React Desktop Dashboard & Settings UI
-- [ ] **Milestone 7**: Tauri Integration, System Tray & Windows Packaging
-- [ ] **Milestone 8**: AI-Powered Resume & Job Semantic Matching
+- [x] **Milestone 0: Architecture & Foundation Design**
+- [x] **Milestone 1: Core Data Models & SQLite Persistence Layer**
+- [x] **Milestone 2: Scraper Adapters (Greenhouse, Lever) & Normalization Engine**
+- [x] **Milestone 3: Monitoring Orchestrator & Deduplication Engine**
+- [x] **Milestone 4: Multi-Attribute Job Filtering Engine**
+- [x] **Milestone 5: Background Processing Pipeline & REST Daemon**
+  - [x] Phase 1: Local FastAPI REST Service Layer
+  - [x] Phase 2: User-Facing Notification Delivery Lifecycle & Status Tracking
+  - [x] Phase 3: Transactional Outbox, Keyset Reevaluation & Fair Backlog Drain Pipeline
+- [ ] **Milestone 6: React Desktop Dashboard & Settings UI**
+- [ ] **Milestone 7: Tauri Integration, System Tray & Windows Packaging**
+- [ ] **Milestone 8: AI-Powered Resume & Job Semantic Matching**
 
 For detailed task breakdowns and acceptance criteria, see [docs/ROADMAP.md](docs/ROADMAP.md).
+
+---
+
+## 🧪 Developer Guide: Running Tests & Migrations
+
+### Running Backend Tests
+Activate the virtual environment in `backend/` and execute `pytest`:
+
+```bash
+cd backend
+.\.venv\Scripts\activate
+
+# Run all automated tests
+pytest
+
+# Run tests with coverage report
+pytest --cov=app --cov-report=term-missing
+
+# Run end-to-end pipeline integration tests
+pytest tests/test_e2e_pipeline.py
+```
+
+### Running Database Migrations
+Database schemas are managed with Alembic:
+
+```bash
+cd backend
+
+# Upgrade to latest schema (head)
+alembic upgrade head
+
+# Downgrade one revision
+alembic downgrade -1
+```
+
+### Code Quality & Static Typing
+HawkOffer enforces strict linting and typing standards:
+
+```bash
+cd backend
+
+# Linting with Ruff
+ruff check app/ tests/
+
+# Code formatting check
+ruff format --check app/ tests/
+
+# Static type checking with MyPy
+mypy app/ tests/
+```
 
 ---
 
