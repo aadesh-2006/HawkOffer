@@ -228,3 +228,97 @@ def test_m5_phase_3_full_migration_lifecycle(tmp_path: Path) -> None:
     assert recreated_drain[0][0] == 1
     assert recreated_drain[0][1] == 0
     conn.close()
+
+
+def test_m5_phase_3_migration_preserves_preexisting_notifications(tmp_path: Path) -> None:
+    """Verify pre-existing notifications remain completely intact across M5 Phase 3 migration."""
+    db_path = tmp_path / "test_migration_notifications.db"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+
+    backend_dir = Path(__file__).resolve().parent.parent
+    ini_path = backend_dir / "alembic.ini"
+    cfg = Config(str(ini_path))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+
+    # 1. Upgrade to pre-Phase-3 head (69f31040e774)
+    command.upgrade(cfg, "69f31040e774")
+
+    # 2. Insert company, job, profile, and notification records
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    cursor.execute(
+        "INSERT INTO companies (name, career_url, platform, is_active, created_at, updated_at) "
+        "VALUES ('Beta Corp', 'https://beta.com', 'lever', 1, "
+        "'2026-10-31 00:00:00', '2026-10-31 00:00:00')"
+    )
+    company_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO jobs (company_id, title, application_url, fingerprint_hash, content_hash, "
+        "status, first_seen_at, last_seen_at, created_at, updated_at) "
+        "VALUES (?, 'Staff Engineer', 'https://beta.com/job1', 'fp201', 'ch201', 'NEW', "
+        "'2026-10-31 00:00:00', '2026-10-31 00:00:00', "
+        "'2026-10-31 00:00:00', '2026-10-31 00:00:00')",
+        (company_id,),
+    )
+    job_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO preference_profiles (name, is_active, minimum_match_score, "
+        "preferred_roles, preferred_locations, preferred_skills, "
+        "preferred_employment_types, required_employment_types, "
+        "preferred_workplace_types, excluded_keywords, excluded_title_keywords, "
+        "excluded_content_keywords, required_roles, required_locations, "
+        "require_graduation_year_match, created_at, updated_at) "
+        "VALUES ('Staff Profile', 1, 0.0, '[]', '[]', '[]', '[]', '[]', '[]', "
+        "'[]', '[]', '[]', '[]', '[]', 0, '2026-10-31 00:00:00', '2026-10-31 00:00:00')"
+    )
+    profile_id = cursor.lastrowid
+
+    # Create notifications: 1 job_alert and 1 desktop_toast
+    cursor.execute(
+        "INSERT INTO notifications (job_id, profile_id, notification_type, status, "
+        "delivery_status, created_at) "
+        "VALUES (?, ?, 'job_alert', 'UNREAD', 'PENDING', '2026-10-31 00:00:00')",
+        (job_id, profile_id),
+    )
+    cursor.execute(
+        "INSERT INTO notifications (job_id, profile_id, notification_type, status, "
+        "delivery_status, created_at) "
+        "VALUES (?, ?, 'desktop_toast', 'READ', 'DELIVERED', '2026-10-31 00:00:00')",
+        (job_id, profile_id),
+    )
+    conn.commit()
+    conn.close()
+
+    # 3. Upgrade to M5 Phase 3 head (8de4342be7a1)
+    command.upgrade(cfg, "8de4342be7a1")
+
+    # Verify both notifications still exist exactly as before
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, job_id, profile_id, notification_type, status, delivery_status "
+        "FROM notifications ORDER BY id ASC"
+    )
+    rows = cursor.fetchall()
+    assert len(rows) == 2
+    assert rows[0][3] == "job_alert"
+    assert rows[0][4] == "UNREAD"
+    assert rows[0][5] == "PENDING"
+    assert rows[1][3] == "desktop_toast"
+    assert rows[1][4] == "READ"
+    assert rows[1][5] == "DELIVERED"
+    conn.close()
+
+    # 4. Downgrade back to 69f31040e774
+    command.downgrade(cfg, "69f31040e774")
+
+    # Verify notifications still exist
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("SELECT count(*) FROM notifications")
+    assert cursor.fetchone()[0] == 2
+    conn.close()
