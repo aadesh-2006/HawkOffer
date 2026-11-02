@@ -409,7 +409,7 @@ class ProfileReevaluationWorker:
                     task.id,
                     exc,
                 )
-                await self._record_task_failure(task.id, str(exc))
+                await self._record_task_failure(task.id, task.lease_token, str(exc))
                 return ChunkCommitStatus.FAILED
 
     async def _complete_task(self, task: ClaimedReevaluationTask) -> bool:
@@ -534,35 +534,49 @@ class ProfileReevaluationWorker:
             except Exception:
                 await session.rollback()
 
-    async def _record_task_failure(self, task_id: int, error_msg: str) -> None:
-        """Record chunk commit failure, resetting to PENDING or transitioning to FAILED."""
+    async def _record_task_failure(self, task_id: int, lease_token: str, error_msg: str) -> bool:
+        """Record chunk commit failure fenced by task lease token.
+
+        Only updates the task if it is still RUNNING and lease_token matches.
+        Resets to PENDING if attempts < max_attempts, else transitions to FAILED.
+        Returns True if failure was recorded, False if lease was stale.
+        """
         async with self.session_factory() as session:
             try:
                 await session.execute(text("BEGIN IMMEDIATE"))
                 res = await session.execute(
-                    select(ProfileReevaluationTask.attempt_count).where(
-                        ProfileReevaluationTask.id == task_id
+                    select(ProfileReevaluationTask).where(
+                        ProfileReevaluationTask.id == task_id,
+                        ProfileReevaluationTask.status == ReevaluationStatus.RUNNING,
+                        ProfileReevaluationTask.lease_token == lease_token,
                     )
                 )
-                attempts = res.scalar_one_or_none() or 0
+                task_db = res.scalar_one_or_none()
+                if not task_db:
+                    await session.rollback()
+                    logger.warning(
+                        "Stale worker attempted to record failure for task %d "
+                        "with token %s; ignored",
+                        task_id,
+                        lease_token,
+                    )
+                    return False
 
+                attempts = task_db.attempt_count
                 new_status = (
                     ReevaluationStatus.FAILED
                     if attempts >= self.max_attempts
                     else ReevaluationStatus.PENDING
                 )
 
-                await session.execute(
-                    update(ProfileReevaluationTask)
-                    .where(ProfileReevaluationTask.id == task_id)
-                    .values(
-                        status=new_status,
-                        last_error=error_msg,
-                        lease_token=None,
-                        lease_expires_at=None,
-                    )
-                )
+                task_db.status = new_status
+                task_db.last_error = error_msg
+                task_db.lease_token = None
+                task_db.lease_expires_at = None
+
                 await session.commit()
+                return True
             except Exception as exc:
                 await session.rollback()
                 logger.error("Failed to record failure status for task %d: %s", task_id, exc)
+                return False
