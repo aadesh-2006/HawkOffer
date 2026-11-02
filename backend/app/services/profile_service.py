@@ -76,6 +76,12 @@ class ProfileUpdateService:
     ) -> tuple[PreferenceProfile | None, ProfileReevaluationTask | None]:
         """Atomically update profile preferences, incrementing revision and enqueuing task."""
         if self._session is not None:
+            if self._session.in_transaction():
+                raise ValueError(
+                    "ProfileUpdateService requires transaction ownership to execute "
+                    "BEGIN IMMEDIATE write locking. The provided session already has "
+                    "an active transaction."
+                )
             return await self._update_profile_in_session(self._session, profile_id, update_data)
 
         async with self._session_factory() as session:
@@ -87,8 +93,7 @@ class ProfileUpdateService:
         profile_id: int,
         update_data: PreferenceProfileUpdate | dict[str, Any],
     ) -> tuple[PreferenceProfile | None, ProfileReevaluationTask | None]:
-        if not session.in_transaction():
-            await session.execute(text("BEGIN IMMEDIATE"))
+        await session.execute(text("BEGIN IMMEDIATE"))
 
         try:
             # 1. Fetch profile under immediate write lock
