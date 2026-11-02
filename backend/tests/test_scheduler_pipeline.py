@@ -1,7 +1,7 @@
-"""Comprehensive tests for M5 Phase 3 Unit 7: Scheduler Integration."""
+"""Comprehensive tests for M5 Phase 3 Unit 7 & 7.1: Scheduler Integration & Lifecycle Hardening."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from apscheduler.triggers.interval import IntervalTrigger
@@ -67,7 +67,7 @@ def mock_drain_worker() -> AsyncMock:
 
 
 # =============================================================================
-# 1. REGISTRATION & CONFIGURATION TESTS
+# 1. REGISTRATION & CONFIGURATION VALIDATION TESTS
 # =============================================================================
 
 
@@ -88,6 +88,7 @@ async def test_pipeline_workers_registration(
         reevaluation_interval_seconds=45,
         drain_interval_seconds=10,
         scheduler_misfire_grace_time_seconds=90,
+        scheduler_max_instances=2,
     )
 
     try:
@@ -101,27 +102,58 @@ async def test_pipeline_workers_registration(
         assert REEVALUATION_JOB_ID in jobs
         assert BACKLOG_DRAIN_JOB_ID in jobs
 
-        # Verify discovery job configuration
+        # Verify discovery job configuration and wired max_instances
         disc_job = jobs[DISCOVERY_JOB_ID]
         assert isinstance(disc_job.trigger, IntervalTrigger)
-        assert disc_job.max_instances == 1
+        assert disc_job.max_instances == 2
         assert disc_job.coalesce is True
         assert disc_job.misfire_grace_time == 90
 
-        # Verify reevaluation job configuration
+        # Verify reevaluation job configuration and wired max_instances
         reeval_job = jobs[REEVALUATION_JOB_ID]
         assert isinstance(reeval_job.trigger, IntervalTrigger)
-        assert reeval_job.max_instances == 1
+        assert reeval_job.max_instances == 2
         assert reeval_job.coalesce is True
 
-        # Verify drain job configuration
+        # Verify drain job configuration and wired max_instances
         drain_job = jobs[BACKLOG_DRAIN_JOB_ID]
         assert isinstance(drain_job.trigger, IntervalTrigger)
-        assert drain_job.max_instances == 1
+        assert drain_job.max_instances == 2
         assert drain_job.coalesce is True
 
     finally:
         await orchestrator.shutdown(wait=False)
+
+
+@pytest.mark.parametrize(
+    ("param_name", "invalid_value"),
+    [
+        ("discovery_interval_seconds", 0),
+        ("discovery_interval_seconds", -5),
+        ("reevaluation_interval_seconds", 0),
+        ("drain_interval_seconds", -1),
+        ("discovery_batch_size", 0),
+        ("reevaluation_chunk_size", -10),
+        ("drain_batch_size", 0),
+        ("scheduler_misfire_grace_time_seconds", 0),
+        ("scheduler_max_instances", 0),
+        ("scheduler_max_instances", -1),
+        ("default_interval_minutes", 0),
+        ("stale_threshold_seconds", 0),
+        ("backoff_factor", 0.5),
+    ],
+)
+def test_invalid_configuration_rejected_before_startup(
+    session_factory: async_sessionmaker[AsyncSession],
+    param_name: str,
+    invalid_value: int | float,
+) -> None:
+    """Verify any non-positive scheduling configuration parameter raises ValueError upfront."""
+    from typing import Any
+
+    kwargs: dict[str, Any] = {param_name: invalid_value}
+    with pytest.raises(ValueError, match=param_name):
+        MonitoringOrchestrator(session_factory=session_factory, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -191,7 +223,86 @@ async def test_repeated_startup_idempotent_no_duplicate_jobs(
 
 
 # =============================================================================
-# 2. EXECUTION & OBSERVABILITY TESTS
+# 2. STARTUP PRECONDITION & FAILURE HANDLING TESTS
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_safely_if_drain_state_fails(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify start() raises RuntimeError if SystemDrainState fails, leaving scheduler stopped."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    with (
+        patch.object(
+            orchestrator,
+            "_ensure_system_drain_state",
+            side_effect=RuntimeError("Database corruption on drain state"),
+        ),
+        pytest.raises(RuntimeError, match="Database corruption on drain state"),
+    ):
+        await orchestrator.start()
+
+    # Scheduler must not be left running in a broken state
+    assert orchestrator.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_safely_if_stale_scan_recovery_fails(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify start() raises RuntimeError on scan recovery failure, leaving scheduler stopped."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    with (
+        patch.object(
+            orchestrator,
+            "recover_stale_scans",
+            side_effect=RuntimeError("Deadlock recovering scans"),
+        ),
+        pytest.raises(RuntimeError, match="Stale scan startup recovery failed"),
+    ):
+        await orchestrator.start()
+
+    assert orchestrator.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_startup_initializes_system_drain_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify orchestrator start() ensures SystemDrainState row 1 exists."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    try:
+        await orchestrator.start()
+
+        async with session_factory() as session:
+            res = await session.execute(select(SystemDrainState).where(SystemDrainState.id == 1))
+            state = res.scalar_one_or_none()
+            assert state is not None
+            assert state.id == 1
+            assert state.drain_counter >= 0
+
+    finally:
+        await orchestrator.shutdown(wait=False)
+
+
+# =============================================================================
+# 3. EXECUTION & OBSERVABILITY TESTS
 # =============================================================================
 
 
@@ -327,7 +438,7 @@ async def test_manual_triggers(
 
 
 # =============================================================================
-# 3. CONCURRENCY & LIFECYCLE TESTS
+# 4. DETERMINISTIC LIFECYCLE & CONCURRENCY TESTS (ASYNCIO.EVENT)
 # =============================================================================
 
 
@@ -336,10 +447,14 @@ async def test_overlapping_worker_runs_skipped_via_in_process_lock(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Verify concurrent attempts to run the same worker return None and skip execution."""
+    started_event = asyncio.Event()
+    finish_event = asyncio.Event()
+
     slow_worker = AsyncMock(spec=JobDiscoveryWorker)
 
     async def _slow_run() -> DiscoveryRunResult:
-        await asyncio.sleep(0.1)
+        started_event.set()
+        await finish_event.wait()
         return DiscoveryRunResult(claimed_count=1)
 
     slow_worker.run_once.side_effect = _slow_run
@@ -349,32 +464,41 @@ async def test_overlapping_worker_runs_skipped_via_in_process_lock(
         discovery_worker=slow_worker,
     )
 
-    # Launch two concurrent runs
-    res1, res2 = await asyncio.gather(
-        orchestrator.run_discovery_worker(),
-        orchestrator.run_discovery_worker(),
-    )
+    # Launch first run in background
+    task1 = asyncio.create_task(orchestrator.run_discovery_worker())
+    await started_event.wait()  # Deterministically ensure task1 holds the lock
 
-    # Exactly one succeeded; the other was skipped
-    results = [res1, res2]
-    assert None in results
-    assert any(isinstance(r, DiscoveryRunResult) for r in results)
+    # Second run attempted concurrently while task1 is inside lock
+    task2 = asyncio.create_task(orchestrator.run_discovery_worker())
+    res2 = await task2
+
+    # Second run must be skipped immediately
+    assert res2 is None
     assert slow_worker.run_once.await_count == 1
+
+    # Release task1
+    finish_event.set()
+    res1 = await task1
+    assert res1 is not None
+    assert res1.claimed_count == 1
 
 
 @pytest.mark.asyncio
-async def test_shutdown_waits_for_in_flight_worker(
+async def test_shutdown_waits_for_active_scheduler_dispatched_worker(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Verify shutdown(wait=True) waits for active in-flight worker run to complete cleanly."""
-    executed = False
+    """Verify shutdown(wait=True) waits for active scheduled worker to complete cleanly."""
+    started_event = asyncio.Event()
+    finish_event = asyncio.Event()
+    worker_finished = False
 
     slow_worker = AsyncMock(spec=JobDiscoveryWorker)
 
     async def _in_flight_run() -> DiscoveryRunResult:
-        nonlocal executed
-        await asyncio.sleep(0.05)
-        executed = True
+        nonlocal worker_finished
+        started_event.set()
+        await finish_event.wait()
+        worker_finished = True
         return DiscoveryRunResult(claimed_count=1)
 
     slow_worker.run_once.side_effect = _in_flight_run
@@ -384,15 +508,163 @@ async def test_shutdown_waits_for_in_flight_worker(
         discovery_worker=slow_worker,
     )
 
-    # Start task in background
+    # Start orchestrator
+    await orchestrator.start()
+
+    # Trigger worker execution in background
     task = asyncio.create_task(orchestrator.run_discovery_worker())
+    await started_event.wait()
+
+    # Launch shutdown(wait=True) while worker is active
+    shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
     await asyncio.sleep(0.01)
 
-    # Shutdown with wait=True
-    await orchestrator.shutdown(wait=True)
+    # Shutdown should be blocked waiting for finish_event
+    assert not shutdown_task.done()
+    assert worker_finished is False
+
+    # Release worker
+    finish_event.set()
+    await shutdown_task
     await task
 
-    assert executed is True
+    assert worker_finished is True
+    assert orchestrator.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_active_manually_triggered_worker_even_if_scheduler_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify shutdown(wait=True) waits for active manual trigger with stopped scheduler."""
+    started_event = asyncio.Event()
+    finish_event = asyncio.Event()
+    worker_finished = False
+
+    slow_worker = AsyncMock(spec=JobDiscoveryWorker)
+
+    async def _in_flight_run() -> DiscoveryRunResult:
+        nonlocal worker_finished
+        started_event.set()
+        await finish_event.wait()
+        worker_finished = True
+        return DiscoveryRunResult(claimed_count=1)
+
+    slow_worker.run_once.side_effect = _in_flight_run
+
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=slow_worker,
+    )
+
+    # Scheduler is NOT running
+    assert orchestrator.is_running is False
+
+    # Launch manual trigger in background
+    task = asyncio.create_task(orchestrator.trigger_discovery_now())
+    await started_event.wait()
+
+    # Launch shutdown(wait=True)
+    shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+    await asyncio.sleep(0.01)
+
+    assert not shutdown_task.done()
+    assert worker_finished is False
+
+    # Release worker
+    finish_event.set()
+    await shutdown_task
+    await task
+
+    assert worker_finished is True
+
+
+@pytest.mark.asyncio
+async def test_no_worker_can_begin_execution_after_shutdown_gate_closed(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+    mock_reevaluation_worker: AsyncMock,
+    mock_drain_worker: AsyncMock,
+) -> None:
+    """Verify all worker entry points reject execution after shutdown closes the lifecycle gate."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+        reevaluation_worker=mock_reevaluation_worker,
+        drain_worker=mock_drain_worker,
+    )
+
+    await orchestrator.start()
+    await orchestrator.shutdown(wait=True)
+
+    # Every scheduled worker and manual trigger must return None immediately
+    assert await orchestrator.run_discovery_worker() is None
+    assert await orchestrator.run_reevaluation_worker() is None
+    assert await orchestrator.run_backlog_drain_worker() is None
+    assert await orchestrator.trigger_discovery_now() is None
+    assert await orchestrator.trigger_reevaluation_now() is None
+    assert await orchestrator.trigger_backlog_drain_now() is None
+    assert await orchestrator.run_company_scan(1) is None
+    assert await orchestrator.trigger_scan_now(1) is None
+
+    # None of the mocked worker run_once methods should have been called
+    mock_discovery_worker.run_once.assert_not_called()
+    mock_reevaluation_worker.run_once.assert_not_called()
+    mock_drain_worker.run_once.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wait_false_does_not_wait_for_active_work(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify shutdown(wait=False) returns immediately without waiting for in-flight work."""
+    started_event = asyncio.Event()
+    finish_event = asyncio.Event()
+
+    slow_worker = AsyncMock(spec=JobDiscoveryWorker)
+
+    async def _in_flight_run() -> DiscoveryRunResult:
+        started_event.set()
+        await finish_event.wait()
+        return DiscoveryRunResult(claimed_count=1)
+
+    slow_worker.run_once.side_effect = _in_flight_run
+
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=slow_worker,
+    )
+
+    task = asyncio.create_task(orchestrator.run_discovery_worker())
+    await started_event.wait()
+
+    # shutdown(wait=False) should return immediately
+    await orchestrator.shutdown(wait=False)
+    assert orchestrator.is_running is False
+    # Task is still running (blocked on finish_event)
+    assert not task.done()
+
+    # Cleanup background task
+    finish_event.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_repeated_shutdown_is_safe(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify shutdown can be called multiple times consecutively without errors."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    await orchestrator.start()
+    await orchestrator.shutdown(wait=True)
+    await orchestrator.shutdown(wait=True)  # Second call
+    await orchestrator.shutdown(wait=False)  # Third call
+
     assert orchestrator.is_running is False
 
 
@@ -419,31 +691,6 @@ async def test_pause_and_resume_pipeline_jobs(
         assert orchestrator.resume_pipeline_job(DISCOVERY_JOB_ID) is True
         status = orchestrator.get_pipeline_status()
         assert status["discovery"]["paused"] is False
-
-    finally:
-        await orchestrator.shutdown(wait=False)
-
-
-@pytest.mark.asyncio
-async def test_startup_initializes_system_drain_state(
-    session_factory: async_sessionmaker[AsyncSession],
-    mock_discovery_worker: AsyncMock,
-) -> None:
-    """Verify orchestrator start() ensures SystemDrainState row 1 exists."""
-    orchestrator = MonitoringOrchestrator(
-        session_factory=session_factory,
-        discovery_worker=mock_discovery_worker,
-    )
-
-    try:
-        await orchestrator.start()
-
-        async with session_factory() as session:
-            res = await session.execute(select(SystemDrainState).where(SystemDrainState.id == 1))
-            state = res.scalar_one_or_none()
-            assert state is not None
-            assert state.id == 1
-            assert state.drain_counter >= 0
 
     finally:
         await orchestrator.shutdown(wait=False)
