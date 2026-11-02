@@ -1383,8 +1383,10 @@ async def test_record_task_failure_transitions_to_pending_or_failed(
     await db_session.commit()
 
     worker = ProfileReevaluationWorker(session_factory=session_factory, max_attempts=3)
-    await worker._record_task_failure(t1.id, "Transient failure")
-    await worker._record_task_failure(t2.id, "Fatal failure")
+    res1 = await worker._record_task_failure(t1.id, "t1-token", "Transient failure")
+    res2 = await worker._record_task_failure(t2.id, "t2-token", "Fatal failure")
+    assert res1 is True
+    assert res2 is True
 
     await db_session.refresh(t1)
     await db_session.refresh(t2)
@@ -1396,6 +1398,85 @@ async def test_record_task_failure_transitions_to_pending_or_failed(
     assert t2.status == ReevaluationStatus.FAILED
     assert t2.lease_token is None
     assert t2.last_error == "Fatal failure"
+
+
+@pytest.mark.asyncio
+async def test_stale_worker_failure_recording_is_rejected_and_preserves_new_lease(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify stale worker cannot record failure if lease token was replaced by new worker."""
+    profile = PreferenceProfile(name="Stale Worker Target", revision=1)
+    db_session.add(profile)
+    await db_session.commit()
+
+    task = ProfileReevaluationTask(
+        profile_id=profile.id,
+        profile_revision=1,
+        max_job_id=20,
+        status=ReevaluationStatus.RUNNING,
+        lease_token="worker-a-token",
+        lease_expires_at=utc_now() + timedelta(minutes=5),
+        attempt_count=1,
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    worker_a = ProfileReevaluationWorker(session_factory=session_factory)
+    claimed_a = ClaimedReevaluationTask(
+        id=task.id,
+        profile_id=profile.id,
+        profile_revision=1,
+        max_job_id=20,
+        last_processed_job_id=0,
+        lease_token="worker-a-token",
+        attempt_count=1,
+    )
+
+    # Worker B reclaims the task and obtains new lease
+    new_expiry = utc_now() + timedelta(minutes=10)
+    task.lease_token = "worker-b-token"
+    task.lease_expires_at = new_expiry
+    task.attempt_count = 2
+    task.last_error = None
+    await db_session.commit()
+
+    # Worker A encounters a simulated failure during fenced commit
+    success = await worker_a._record_task_failure(
+        claimed_a.id, claimed_a.lease_token, "Worker A simulated chunk error"
+    )
+    assert success is False
+
+    # Verify Worker B's lease and task state remain pristine
+    await db_session.refresh(task)
+    assert task.status == ReevaluationStatus.RUNNING
+    assert task.lease_token == "worker-b-token"
+    assert task.attempt_count == 2
+    assert task.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_active_injected_session_raises_value_error(
+    db_session: AsyncSession,
+) -> None:
+    """Verify ProfileUpdateService rejects an injected session that already has an active tx."""
+    profile = PreferenceProfile(name="Active Tx Profile", revision=1)
+    db_session.add(profile)
+    await db_session.commit()
+
+    # Start an explicit transaction on db_session
+    async with db_session.begin():
+        service = ProfileUpdateService(session=db_session)
+        with pytest.raises(ValueError, match="ProfileUpdateService requires transaction ownership"):
+            await service.update_profile(
+                profile.id,
+                PreferenceProfileUpdate(preferred_roles=["Should Not Commit"]),
+            )
+
+    # Verify profile was NOT modified and revision is still 1
+    await db_session.refresh(profile)
+    assert profile.revision == 1
+    assert profile.preferred_roles == []
 
 
 @pytest.mark.asyncio
