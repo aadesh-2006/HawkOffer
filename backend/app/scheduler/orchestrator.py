@@ -57,6 +57,7 @@ class MonitoringOrchestrator:
         reevaluation_chunk_size: int | None = None,
         drain_batch_size: int | None = None,
         scheduler_misfire_grace_time_seconds: int | None = None,
+        scheduler_max_instances: int | None = None,
         enable_pipeline_jobs: bool = True,
     ) -> None:
         self.session_factory = session_factory
@@ -105,7 +106,15 @@ class MonitoringOrchestrator:
             if scheduler_misfire_grace_time_seconds is not None
             else settings.scheduler_misfire_grace_time_seconds
         )
+        self.scheduler_max_instances = (
+            scheduler_max_instances
+            if scheduler_max_instances is not None
+            else settings.scheduler_max_instances
+        )
         self.enable_pipeline_jobs = enable_pipeline_jobs
+
+        # Validate configuration upfront
+        self._validate_configuration()
 
         # Worker instances
         self.discovery_worker = discovery_worker or JobDiscoveryWorker(
@@ -121,13 +130,63 @@ class MonitoringOrchestrator:
             batch_size=self.drain_batch_size,
         )
 
+        # Lifecycle gate: when True, all incoming worker executions are rejected
+        self._is_shutting_down = False
+
         # Per-company in-process lock to prevent overlapping runs within the same instance
         self._company_locks: dict[int, asyncio.Lock] = {}
 
-        # In-process locks for M5 workers to guarantee max_instances=1 in event loop
+        # In-process locks for M5 workers to guarantee single-instance mutual exclusion across
+        # both scheduled triggers and manual out-of-band triggers in the event loop.
         self._discovery_lock = asyncio.Lock()
         self._reevaluation_lock = asyncio.Lock()
         self._drain_lock = asyncio.Lock()
+
+    def _validate_configuration(self) -> None:
+        """Validate that all scheduling parameters and batch sizes are strictly positive."""
+        if self.discovery_interval_seconds <= 0:
+            raise ValueError(
+                f"discovery_interval_seconds must be positive, "
+                f"got {self.discovery_interval_seconds}"
+            )
+        if self.reevaluation_interval_seconds <= 0:
+            raise ValueError(
+                f"reevaluation_interval_seconds must be positive, "
+                f"got {self.reevaluation_interval_seconds}"
+            )
+        if self.drain_interval_seconds <= 0:
+            raise ValueError(
+                f"drain_interval_seconds must be positive, got {self.drain_interval_seconds}"
+            )
+        if self.discovery_batch_size <= 0:
+            raise ValueError(
+                f"discovery_batch_size must be positive, got {self.discovery_batch_size}"
+            )
+        if self.reevaluation_chunk_size <= 0:
+            raise ValueError(
+                f"reevaluation_chunk_size must be positive, got {self.reevaluation_chunk_size}"
+            )
+        if self.drain_batch_size <= 0:
+            raise ValueError(f"drain_batch_size must be positive, got {self.drain_batch_size}")
+        if self.scheduler_misfire_grace_time_seconds <= 0:
+            raise ValueError(
+                f"scheduler_misfire_grace_time_seconds must be positive, "
+                f"got {self.scheduler_misfire_grace_time_seconds}"
+            )
+        if self.scheduler_max_instances <= 0:
+            raise ValueError(
+                f"scheduler_max_instances must be positive, got {self.scheduler_max_instances}"
+            )
+        if self.default_interval_minutes <= 0:
+            raise ValueError(
+                f"default_interval_minutes must be positive, got {self.default_interval_minutes}"
+            )
+        if self.stale_threshold_seconds <= 0:
+            raise ValueError(
+                f"stale_threshold_seconds must be positive, got {self.stale_threshold_seconds}"
+            )
+        if self.backoff_factor < 1.0:
+            raise ValueError(f"backoff_factor must be >= 1.0, got {self.backoff_factor}")
 
     def _get_company_lock(self, company_id: int) -> asyncio.Lock:
         """Retrieve or create an asyncio.Lock for a specific company."""
@@ -141,60 +200,118 @@ class MonitoringOrchestrator:
         return bool(self.scheduler.running)
 
     async def start(self) -> None:
-        """Start scheduler, initialize drain state, recover scans, and register jobs."""
-        if not self.is_running:
-            logger.info("Starting MonitoringOrchestrator scheduler...")
-            self.scheduler.start()
-        else:
+        """Start scheduler, initialize drain state, recover scans, and register jobs.
+
+        Preconditions (validation, SystemDrainState existence, and recovery) are performed
+        before recurring scheduler jobs are started. If any step fails, an exception is raised
+        and the scheduler is guaranteed not to be left running in a broken state.
+        """
+        if self.is_running:
             logger.debug("MonitoringOrchestrator is already running.")
+            return
 
-        # 1. Ensure SystemDrainState initialization is valid
-        await self._ensure_system_drain_state()
+        # 1. Reset lifecycle gate
+        self._is_shutting_down = False
 
-        # 2. Recover any scans left in RUNNING state prior to startup
-        recovered_count = await self.recover_stale_scans()
-        if recovered_count > 0:
-            logger.info("Startup recovery reset %d stale scans.", recovered_count)
+        # 2. Re-validate configuration before startup
+        self._validate_configuration()
 
-        # 3. Register background pipeline worker jobs
+        # 3. Ensure SystemDrainState initialization is valid BEFORE recurring jobs can run
+        try:
+            await self._ensure_system_drain_state()
+        except Exception:
+            self._is_shutting_down = True
+            if self.is_running:
+                self.scheduler.shutdown(wait=False)
+            raise
+
+        # 4. Recover any scans left in RUNNING state prior to startup
+        try:
+            recovered_count = await self.recover_stale_scans()
+            if recovered_count > 0:
+                logger.info("Startup recovery reset %d stale scans.", recovered_count)
+        except Exception as exc:
+            self._is_shutting_down = True
+            if self.is_running:
+                self.scheduler.shutdown(wait=False)
+            logger.error("Failed to recover stale scans on startup: %s", exc)
+            raise RuntimeError(f"Stale scan startup recovery failed: {exc}") from exc
+
+        # 5. Register background pipeline worker jobs
         if self.enable_pipeline_jobs:
             self.register_pipeline_jobs()
 
-        # 4. Synchronize company schedules
+        # 6. Synchronize company schedules
         await self.sync_company_schedules()
 
+        # 7. Start the underlying scheduler now that all preconditions are met
+        logger.info("Starting MonitoringOrchestrator scheduler...")
+        self.scheduler.start()
+
     async def shutdown(self, wait: bool = True) -> None:
-        """Gracefully shut down scheduler and wait for in-flight executions."""
+        """Gracefully shut down scheduler and wait for in-flight executions.
+
+        The lifecycle gate is closed immediately to reject any new worker executions,
+        and all in-flight pipeline workers (both scheduled and manually triggered) and company
+        scans are cleanly waited for when wait=True.
+        """
+        # 1. Close lifecycle gate immediately
+        self._is_shutting_down = True
+
+        # 2. Stop scheduler from dispatching new jobs
         if self.is_running:
             logger.info("Shutting down MonitoringOrchestrator scheduler (wait=%s)...", wait)
             self.scheduler.shutdown(wait=wait)
-            # Yield to event loop to allow AsyncIOScheduler callback to execute
+            # Yield to event loop to allow AsyncIOScheduler callback to transition state
             await asyncio.sleep(0)
-
-            if wait:
-                # Wait for any active in-flight worker executions to complete cleanly
-                for lock_name, lock in [
-                    ("JobDiscoveryWorker", self._discovery_lock),
-                    ("ProfileReevaluationWorker", self._reevaluation_lock),
-                    ("BacklogDrainWorker", self._drain_lock),
-                ]:
-                    if lock.locked():
-                        logger.info("Waiting for in-flight %s execution to finish...", lock_name)
-                        async with lock:
-                            pass
         else:
-            logger.debug("MonitoringOrchestrator scheduler is not running; shutdown skipped.")
+            logger.debug(
+                "MonitoringOrchestrator scheduler is not running; scheduler shutdown skipped."
+            )
+
+        # 3. Handle in-flight worker executions if wait is requested
+        if wait:
+            # Wait for any active in-flight pipeline worker executions to complete cleanly
+            for lock_name, lock in [
+                ("JobDiscoveryWorker", self._discovery_lock),
+                ("ProfileReevaluationWorker", self._reevaluation_lock),
+                ("BacklogDrainWorker", self._drain_lock),
+            ]:
+                if lock.locked():
+                    logger.info("Waiting for in-flight %s execution to finish...", lock_name)
+                    async with lock:
+                        pass
+
+            # Wait for any in-flight company scans to complete cleanly
+            for company_id, lock in list(self._company_locks.items()):
+                if lock.locked():
+                    logger.info(
+                        "Waiting for in-flight scan for company %d to finish...",
+                        company_id,
+                    )
+                    async with lock:
+                        pass
 
     async def _ensure_system_drain_state(self) -> None:
-        """Validate or initialize the singleton SystemDrainState row."""
+        """Validate or initialize the singleton SystemDrainState row.
+
+        Raises:
+            RuntimeError: If SystemDrainState cannot be retrieved, created, or has an invalid state.
+        """
         try:
             async with self.session_factory() as session:
                 await session.execute(text("BEGIN IMMEDIATE"))
-                await SystemDrainState.get_or_create(session)
+                state = await SystemDrainState.get_or_create(session)
+                if state is None or state.id != 1 or state.drain_counter < 0:
+                    raise ValueError(f"Invalid SystemDrainState row encountered: {state}")
                 await session.commit()
-            logger.info("SystemDrainState validated and initialized successfully.")
+            logger.info(
+                "SystemDrainState validated and initialized successfully (drain_counter=%d).",
+                state.drain_counter,
+            )
         except Exception as exc:
-            logger.warning("Could not initialize SystemDrainState on startup: %s", exc)
+            logger.error("Failed to initialize SystemDrainState on startup: %s", exc)
+            raise RuntimeError(f"SystemDrainState startup initialization failed: {exc}") from exc
 
     async def recover_stale_scans(self) -> int:
         """Identify and recover any scans stuck in RUNNING status past the timeout threshold."""
@@ -219,14 +336,15 @@ class MonitoringOrchestrator:
             name="Job Discovery Worker",
             trigger=IntervalTrigger(seconds=self.discovery_interval_seconds, timezone="UTC"),
             replace_existing=True,
-            max_instances=1,
+            max_instances=self.scheduler_max_instances,
             coalesce=True,
             misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
         )
         logger.info(
-            "Registered scheduled job '%s' (%ds interval)",
+            "Registered scheduled job '%s' (%ds interval, max_instances=%d)",
             DISCOVERY_JOB_ID,
             self.discovery_interval_seconds,
+            self.scheduler_max_instances,
         )
 
         # 2. Profile Reevaluation Worker
@@ -236,14 +354,15 @@ class MonitoringOrchestrator:
             name="Profile Reevaluation Worker",
             trigger=IntervalTrigger(seconds=self.reevaluation_interval_seconds, timezone="UTC"),
             replace_existing=True,
-            max_instances=1,
+            max_instances=self.scheduler_max_instances,
             coalesce=True,
             misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
         )
         logger.info(
-            "Registered scheduled job '%s' (%ds interval)",
+            "Registered scheduled job '%s' (%ds interval, max_instances=%d)",
             REEVALUATION_JOB_ID,
             self.reevaluation_interval_seconds,
+            self.scheduler_max_instances,
         )
 
         # 3. Backlog Drain Worker
@@ -253,24 +372,35 @@ class MonitoringOrchestrator:
             name="Backlog Drain Worker",
             trigger=IntervalTrigger(seconds=self.drain_interval_seconds, timezone="UTC"),
             replace_existing=True,
-            max_instances=1,
+            max_instances=self.scheduler_max_instances,
             coalesce=True,
             misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
         )
         logger.info(
-            "Registered scheduled job '%s' (%ds interval)",
+            "Registered scheduled job '%s' (%ds interval, max_instances=%d)",
             BACKLOG_DRAIN_JOB_ID,
             self.drain_interval_seconds,
+            self.scheduler_max_instances,
         )
 
     async def run_discovery_worker(self) -> DiscoveryRunResult | None:
         """Execute one cycle of JobDiscoveryWorker with lock isolation and observability."""
+        if self._is_shutting_down:
+            logger.warning("JobDiscoveryWorker skipped: orchestrator is shutting down.")
+            return None
+
         lock = self._discovery_lock
         if lock.locked():
             logger.warning("JobDiscoveryWorker is already running locally. Skipping execution.")
             return None
 
         async with lock:
+            if self._is_shutting_down:
+                logger.warning(
+                    "JobDiscoveryWorker aborted before run: orchestrator is shutting down."
+                )
+                return None
+
             worker_name = "JobDiscoveryWorker"
             start_time = datetime.now(UTC)
             start_perf = time.perf_counter()
@@ -298,6 +428,10 @@ class MonitoringOrchestrator:
 
     async def run_reevaluation_worker(self) -> ReevaluationRunResult | None:
         """Execute one cycle of ProfileReevaluationWorker with lock isolation and observability."""
+        if self._is_shutting_down:
+            logger.warning("ProfileReevaluationWorker skipped: orchestrator is shutting down.")
+            return None
+
         lock = self._reevaluation_lock
         if lock.locked():
             logger.warning(
@@ -306,6 +440,12 @@ class MonitoringOrchestrator:
             return None
 
         async with lock:
+            if self._is_shutting_down:
+                logger.warning(
+                    "ProfileReevaluationWorker aborted before run: orchestrator is shutting down."
+                )
+                return None
+
             worker_name = "ProfileReevaluationWorker"
             start_time = datetime.now(UTC)
             start_perf = time.perf_counter()
@@ -336,12 +476,22 @@ class MonitoringOrchestrator:
 
     async def run_backlog_drain_worker(self) -> DrainRunResult | None:
         """Execute one cycle of BacklogDrainWorker with lock isolation and observability."""
+        if self._is_shutting_down:
+            logger.warning("BacklogDrainWorker skipped: orchestrator is shutting down.")
+            return None
+
         lock = self._drain_lock
         if lock.locked():
             logger.warning("BacklogDrainWorker is already running locally. Skipping execution.")
             return None
 
         async with lock:
+            if self._is_shutting_down:
+                logger.warning(
+                    "BacklogDrainWorker aborted before run: orchestrator is shutting down."
+                )
+                return None
+
             worker_name = "BacklogDrainWorker"
             start_time = datetime.now(UTC)
             start_perf = time.perf_counter()
@@ -371,16 +521,25 @@ class MonitoringOrchestrator:
 
     async def trigger_discovery_now(self) -> DiscoveryRunResult | None:
         """Trigger an immediate out-of-band discovery run."""
+        if self._is_shutting_down:
+            logger.warning("Manual discovery trigger rejected: orchestrator is shutting down.")
+            return None
         logger.info("Manually triggering immediate JobDiscoveryWorker run")
         return await self.run_discovery_worker()
 
     async def trigger_reevaluation_now(self) -> ReevaluationRunResult | None:
         """Trigger an immediate out-of-band profile reevaluation run."""
+        if self._is_shutting_down:
+            logger.warning("Manual reevaluation trigger rejected: orchestrator is shutting down.")
+            return None
         logger.info("Manually triggering immediate ProfileReevaluationWorker run")
         return await self.run_reevaluation_worker()
 
     async def trigger_backlog_drain_now(self) -> DrainRunResult | None:
         """Trigger an immediate out-of-band backlog drain run."""
+        if self._is_shutting_down:
+            logger.warning("Manual drain trigger rejected: orchestrator is shutting down.")
+            return None
         logger.info("Manually triggering immediate BacklogDrainWorker run")
         return await self.run_backlog_drain_worker()
 
@@ -525,6 +684,13 @@ class MonitoringOrchestrator:
 
     async def run_company_scan(self, company_id: int) -> IngestionResult | None:
         """Execute a single scan for a company with lock isolation and state management."""
+        if self._is_shutting_down:
+            logger.warning(
+                "Scan for company %d skipped: orchestrator is shutting down.",
+                company_id,
+            )
+            return None
+
         lock = self._get_company_lock(company_id)
 
         if lock.locked():
@@ -535,6 +701,13 @@ class MonitoringOrchestrator:
             return None
 
         async with lock:
+            if self._is_shutting_down:
+                logger.warning(
+                    "Scan for company %d aborted: orchestrator is shutting down.",
+                    company_id,
+                )
+                return None
+
             # Phase 1: Verify company and transition scan state to RUNNING
             async with self.session_factory() as session:
                 company_repo = CompanyRepository(session)
@@ -681,6 +854,9 @@ class MonitoringOrchestrator:
 
     async def trigger_scan_now(self, company_id: int) -> IngestionResult | None:
         """Trigger an immediate out-of-band scan for a company."""
+        if self._is_shutting_down:
+            logger.warning("Manual scan rejected: orchestrator is shutting down.")
+            return None
         logger.info("Manually triggering immediate scan for company %d", company_id)
         return await self.run_company_scan(company_id)
 
