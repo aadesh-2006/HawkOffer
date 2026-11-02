@@ -1084,3 +1084,150 @@ async def test_restart_after_completed_shutdown_still_works(
         await orchestrator.shutdown(wait=True)
         assert orchestrator.is_running is False
         assert orchestrator.is_lifecycle_gate_open is False
+
+
+# =============================================================================
+# 7. SHUTDOWN INTENT & QUEUED STARTUP RACE TESTS (UNIT 7.4)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_queued_startup_race_prevented_by_durable_shutdown_intent(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify queued startup B cannot start scheduler when shutdown is requested during A."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        # 1. Startup A begins and blocks in sync_company_schedules
+        start_a_task = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        # 2. Startup B calls start() and queues waiting for _startup_lock
+        start_b_task = asyncio.create_task(orchestrator.start())
+        await asyncio.sleep(0)  # yield to allow B to reach _startup_lock
+
+        # 3. Shutdown is requested while A is active and B is queued
+        shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+        await asyncio.sleep(0)  # yield to register shutdown intent
+
+        # 4. Release A so it detects shutdown and aborts
+        sync_proceed.set()
+
+        # Both A and B must abort with RuntimeError
+        with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+            await start_a_task
+
+        with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+            await start_b_task
+
+        await shutdown_task
+
+        # Verify B could not start the scheduler; scheduler stopped, no jobs registered
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+        assert orchestrator._is_shutting_down is True
+        assert len(orchestrator.scheduler.get_jobs()) == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_restart_succeeds_after_queued_shutdown_race(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify a genuinely new start() after shutdown fully completes restarts successfully."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_a = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        start_b = asyncio.create_task(orchestrator.start())
+        await asyncio.sleep(0)
+
+        shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+        await asyncio.sleep(0)
+
+        sync_proceed.set()
+
+        with pytest.raises(RuntimeError):
+            await start_a
+        with pytest.raises(RuntimeError):
+            await start_b
+        await shutdown_task
+
+    # Now that shutdown has completely finished, trigger a fresh restart
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+        assert orchestrator.scheduler.get_job(DISCOVERY_JOB_ID) is not None
+
+        result = await orchestrator.trigger_discovery_now()
+        assert result is not None
+    finally:
+        await orchestrator.shutdown(wait=True)
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_shutdown_calls_during_startup_do_not_deadlock(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify multiple concurrent shutdown calls during startup do not deadlock or leak jobs."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_task = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        # Fire multiple concurrent shutdown calls with mixed wait flags
+        shut_1 = asyncio.create_task(orchestrator.shutdown(wait=True))
+        shut_2 = asyncio.create_task(orchestrator.shutdown(wait=True))
+        shut_3 = asyncio.create_task(orchestrator.shutdown(wait=False))
+        await asyncio.sleep(0)
+
+        # Release startup
+        sync_proceed.set()
+
+        with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+            await start_task
+
+        await asyncio.gather(shut_1, shut_2, shut_3)
+
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+        assert len(orchestrator.scheduler.get_jobs()) == 0
