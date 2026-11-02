@@ -135,6 +135,7 @@ class MonitoringOrchestrator:
         self._is_shutting_down = False
         self._is_starting = False
         self._shutdown_requested = False
+        self._active_shutdowns = 0
         self._generation = 0
         self._startup_lock = asyncio.Lock()
 
@@ -213,9 +214,13 @@ class MonitoringOrchestrator:
         """Check if shutdown was requested while startup was in progress.
 
         Raises:
-            RuntimeError: If shutdown was requested during startup.
+            RuntimeError: If shutdown was requested or is in progress.
         """
-        if self._shutdown_requested or self._generation != call_generation:
+        if (
+            self._active_shutdowns > 0
+            or self._shutdown_requested
+            or self._generation != call_generation
+        ):
             raise RuntimeError("MonitoringOrchestrator startup aborted: shutdown was requested.")
 
     async def start(self) -> None:
@@ -232,6 +237,12 @@ class MonitoringOrchestrator:
             - Partially registered jobs are removed.
             - A descriptive exception (or CancelledError) is propagated to the caller.
         """
+        if self._active_shutdowns > 0 or self._shutdown_requested:
+            logger.warning(
+                "MonitoringOrchestrator startup rejected: shutdown is active or pending."
+            )
+            raise RuntimeError("MonitoringOrchestrator startup aborted: shutdown was requested.")
+
         if self.is_running:
             logger.debug("MonitoringOrchestrator is already running.")
             return
@@ -239,19 +250,23 @@ class MonitoringOrchestrator:
         call_generation = self._generation
 
         async with self._startup_lock:
-            # Re-check under lock in case another task completed startup
-            if self.is_running:
-                logger.debug("MonitoringOrchestrator is already running.")
-                return
-
-            # If shutdown was requested or a shutdown finished while this call was queued, abort
-            if self._shutdown_requested or self._generation != call_generation:
+            # If shutdown was requested, active, or finished while queued, abort
+            if (
+                self._active_shutdowns > 0
+                or self._shutdown_requested
+                or self._generation != call_generation
+            ):
                 logger.warning(
-                    "MonitoringOrchestrator startup rejected: shutdown is pending or completed."
+                    "MonitoringOrchestrator startup rejected: shutdown is active or completed."
                 )
                 raise RuntimeError(
                     "MonitoringOrchestrator startup aborted: shutdown was requested."
                 )
+
+            # Re-check under lock in case another task completed startup
+            if self.is_running:
+                logger.debug("MonitoringOrchestrator is already running.")
+                return
 
             self._is_starting = True
             # 1. Keep the lifecycle gate closed throughout startup
@@ -331,56 +346,66 @@ class MonitoringOrchestrator:
         any in-progress startup is coordinated with and aborted safely without deadlocks,
         and all in-flight pipeline workers (both scheduled and manually triggered) and company
         scans are cleanly waited for when wait=True.
+        Startup admission remains closed throughout the entire shutdown operation until all
+        active shutdowns finish.
         """
-        # 1. Close lifecycle gate and signal shutdown immediately
+        # 1. Close lifecycle gate, register active shutdown, and signal shutdown immediately
         self._is_shutting_down = True
         self._shutdown_requested = True
+        self._active_shutdowns += 1
 
-        # 2. Coordinate with startup: wait for any in-progress startup attempt to finish or abort
-        async with self._startup_lock:
-            # Advance lifecycle generation and reset pending shutdown request under lock
-            # so that future start() calls invoked after this shutdown completes are recognized
-            # as new, fresh startup attempts rather than queued ones.
-            self._generation += 1
-            self._shutdown_requested = False
+        try:
+            # 2. Coordinate with startup: wait for any in-progress startup to finish or abort
+            async with self._startup_lock:
+                # 3. Stop scheduler from dispatching new jobs
+                if self.is_running:
+                    logger.info("Shutting down MonitoringOrchestrator scheduler (wait=%s)...", wait)
+                    self.scheduler.shutdown(wait=wait)
+                    # Yield to event loop to allow AsyncIOScheduler callback to transition state
+                    await asyncio.sleep(0)
+                else:
+                    logger.debug(
+                        "MonitoringOrchestrator scheduler is not running; shutdown skipped."
+                    )
 
-            # 3. Stop scheduler from dispatching new jobs
+                # Ensure any registered jobs are removed from scheduler
+                with suppress(Exception):
+                    self.scheduler.remove_all_jobs()
+
+            # 4. Handle in-flight worker executions if wait is requested
+            if wait:
+                # Wait for any active in-flight pipeline worker executions to complete cleanly
+                for lock_name, lock in [
+                    ("JobDiscoveryWorker", self._discovery_lock),
+                    ("ProfileReevaluationWorker", self._reevaluation_lock),
+                    ("BacklogDrainWorker", self._drain_lock),
+                ]:
+                    if lock.locked():
+                        logger.info("Waiting for in-flight %s execution to finish...", lock_name)
+                        async with lock:
+                            pass
+
+                # Wait for any in-flight company scans to complete cleanly
+                for company_id, lock in list(self._company_locks.items()):
+                    if lock.locked():
+                        logger.info(
+                            "Waiting for in-flight scan for company %d to finish...",
+                            company_id,
+                        )
+                        async with lock:
+                            pass
+        except asyncio.CancelledError:
+            self._is_shutting_down = True
             if self.is_running:
-                logger.info("Shutting down MonitoringOrchestrator scheduler (wait=%s)...", wait)
-                self.scheduler.shutdown(wait=wait)
-                # Yield to event loop to allow AsyncIOScheduler callback to transition state
-                await asyncio.sleep(0)
-            else:
-                logger.debug(
-                    "MonitoringOrchestrator scheduler is not running; scheduler shutdown skipped."
-                )
-
-            # Ensure any registered jobs are removed from scheduler
+                self.scheduler.shutdown(wait=False)
             with suppress(Exception):
                 self.scheduler.remove_all_jobs()
-
-        # 4. Handle in-flight worker executions if wait is requested
-        if wait:
-            # Wait for any active in-flight pipeline worker executions to complete cleanly
-            for lock_name, lock in [
-                ("JobDiscoveryWorker", self._discovery_lock),
-                ("ProfileReevaluationWorker", self._reevaluation_lock),
-                ("BacklogDrainWorker", self._drain_lock),
-            ]:
-                if lock.locked():
-                    logger.info("Waiting for in-flight %s execution to finish...", lock_name)
-                    async with lock:
-                        pass
-
-            # Wait for any in-flight company scans to complete cleanly
-            for company_id, lock in list(self._company_locks.items()):
-                if lock.locked():
-                    logger.info(
-                        "Waiting for in-flight scan for company %d to finish...",
-                        company_id,
-                    )
-                    async with lock:
-                        pass
+            raise
+        finally:
+            self._active_shutdowns -= 1
+            if self._active_shutdowns == 0:
+                self._generation += 1
+                self._shutdown_requested = False
 
     async def _ensure_system_drain_state(self) -> None:
         """Validate or initialize the singleton SystemDrainState row.
