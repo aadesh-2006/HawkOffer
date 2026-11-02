@@ -1231,3 +1231,152 @@ async def test_concurrent_shutdown_calls_during_startup_do_not_deadlock(
         assert orchestrator.is_running is False
         assert orchestrator.is_lifecycle_gate_open is False
         assert len(orchestrator.scheduler.get_jobs()) == 0
+
+
+@pytest.mark.asyncio
+async def test_start_invoked_while_shutdown_in_progress_is_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify startup requests arriving at any point during shutdown are rejected."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    # First start orchestrator cleanly
+    await orchestrator.start()
+    assert orchestrator.is_running is True
+
+    # Hold a worker lock to simulate in-flight execution during shutdown step 4
+    await orchestrator._discovery_lock.acquire()
+
+    shut_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+    # Yield to let shutdown acquire/release _startup_lock and block waiting for _discovery_lock
+    await asyncio.sleep(0)
+
+    # While shutdown is actively waiting for in-flight workers, invoke start()
+    with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+        await orchestrator.start()
+
+    # Release worker lock and let shutdown finish cleanly
+    orchestrator._discovery_lock.release()
+    await shut_task
+
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+
+
+@pytest.mark.asyncio
+async def test_fresh_start_succeeds_after_shutdown_fully_completes(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify that after shutdown has completely finished, a fresh start() succeeds."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    await orchestrator.start()
+    assert orchestrator.is_running is True
+
+    await orchestrator.shutdown(wait=True)
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+
+    # A fresh start() invocation made after shutdown is completely finished
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+        assert orchestrator.scheduler.get_job(DISCOVERY_JOB_ID) is not None
+    finally:
+        await orchestrator.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_shutdown_calls_do_not_reopen_admission_early(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify overlapping shutdowns do not reopen admission until the last shutdown completes."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    await orchestrator.start()
+
+    # Hold worker lock to block wait=True shutdown
+    await orchestrator._discovery_lock.acquire()
+
+    shut_1 = asyncio.create_task(orchestrator.shutdown(wait=False))
+    shut_2 = asyncio.create_task(orchestrator.shutdown(wait=True))
+
+    # Wait for shut_1 (wait=False) to finish
+    await shut_1
+
+    # shut_2 is still waiting on _discovery_lock, so active_shutdowns > 0
+    assert orchestrator._active_shutdowns == 1
+
+    # Attempting start() now must fail
+    with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+        await orchestrator.start()
+
+    # Release worker lock and wait for shut_2 to finish
+    orchestrator._discovery_lock.release()
+    await shut_2
+
+    assert orchestrator._active_shutdowns == 0
+    assert orchestrator.is_running is False
+
+    # Now fresh start must succeed
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+    finally:
+        await orchestrator.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancellation_leaves_safe_state_and_allows_fresh_restart(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify cancelled shutdown stops scheduler, closes gate, and allows subsequent start."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    await orchestrator.start()
+    assert orchestrator.is_running is True
+
+    # Hold worker lock to block shutdown step 4
+    await orchestrator._discovery_lock.acquire()
+
+    shut_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+    await asyncio.sleep(0)
+
+    # Cancel shutdown while it's waiting for workers
+    shut_task.cancel()
+    orchestrator._discovery_lock.release()
+
+    with pytest.raises(asyncio.CancelledError):
+        await shut_task
+
+    # Orchestrator must be stopped, gate closed, and active_shutdowns reset to 0
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+    assert orchestrator._active_shutdowns == 0
+    assert orchestrator._shutdown_requested is False
+
+    # Subsequent fresh start must succeed cleanly
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+    finally:
+        await orchestrator.shutdown(wait=True)
