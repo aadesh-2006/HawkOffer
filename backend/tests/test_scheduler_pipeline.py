@@ -915,3 +915,172 @@ async def test_concurrent_start_calls_are_idempotent(
         assert job_ids.count(BACKLOG_DRAIN_JOB_ID) == 1
     finally:
         await orchestrator.shutdown(wait=False)
+
+
+# =============================================================================
+# 6. STARTUP & SHUTDOWN COORDINATION TESTS (UNIT 7.3)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_startup_prevents_scheduler_start(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify shutdown requested during startup prevents scheduler start and closes gate."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_task = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        # Jobs were registered before sync_company_schedules
+        assert len(orchestrator.scheduler.get_jobs()) > 0
+
+        # Initiate shutdown while startup is blocked in sync_company_schedules
+        shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+        await asyncio.sleep(0)  # yield to allow shutdown to set shutdown flags
+
+        # Release startup to proceed
+        sync_proceed.set()
+
+        # start_task must abort with RuntimeError
+        with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+            await start_task
+
+        await shutdown_task
+
+        # Verify scheduler is not running, gate is closed, and jobs are removed
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+        assert orchestrator._is_shutting_down is True
+        assert len(orchestrator.scheduler.get_jobs()) == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_startup_cleanup(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify shutdown does not return while an in-progress startup is capable of mutating state."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_task = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        # Call shutdown
+        shutdown_task = asyncio.create_task(orchestrator.shutdown(wait=True))
+        await asyncio.sleep(0)
+
+        # Proves shutdown does not return while startup is still in progress / cleanup pending
+        assert not shutdown_task.done()
+
+        # Release startup so it can detect shutdown and complete cleanup
+        sync_proceed.set()
+
+        with pytest.raises(RuntimeError, match="startup aborted: shutdown was requested"):
+            await start_task
+
+        await shutdown_task
+
+        # Now shutdown has completed cleanly
+        assert shutdown_task.done()
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+        assert len(orchestrator.scheduler.get_jobs()) == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_cancellation_cleans_up_registered_jobs(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify cancelling start() cleans up registered jobs and propagates CancelledError."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    sync_started = asyncio.Event()
+    sync_proceed = asyncio.Event()
+
+    async def blocking_sync() -> None:
+        sync_started.set()
+        await sync_proceed.wait()
+
+    with patch.object(orchestrator, "sync_company_schedules", side_effect=blocking_sync):
+        start_task = asyncio.create_task(orchestrator.start())
+        await sync_started.wait()
+
+        # Verify pipeline jobs were registered before sync
+        assert len(orchestrator.scheduler.get_jobs()) > 0
+
+        # Cancel the startup task
+        start_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+        # Verify cancellation safety: scheduler stopped, gate closed, jobs removed
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
+        assert orchestrator._is_shutting_down is True
+        assert len(orchestrator.scheduler.get_jobs()) == 0
+
+
+@pytest.mark.asyncio
+async def test_restart_after_completed_shutdown_still_works(
+    session_factory: async_sessionmaker[AsyncSession],
+    mock_discovery_worker: AsyncMock,
+) -> None:
+    """Verify orchestrator can cleanly restart and execute after a complete shutdown."""
+    orchestrator = MonitoringOrchestrator(
+        session_factory=session_factory,
+        discovery_worker=mock_discovery_worker,
+    )
+
+    # Initial start
+    await orchestrator.start()
+    assert orchestrator.is_running is True
+    assert orchestrator.is_lifecycle_gate_open is True
+
+    # Complete shutdown
+    await orchestrator.shutdown(wait=True)
+    assert orchestrator.is_running is False
+    assert orchestrator.is_lifecycle_gate_open is False
+
+    # Restart
+    await orchestrator.start()
+    try:
+        assert orchestrator.is_running is True
+        assert orchestrator.is_lifecycle_gate_open is True
+        assert orchestrator.scheduler.get_job(DISCOVERY_JOB_ID) is not None
+
+        # Verify manual triggers execute successfully on restarted orchestrator
+        result = await orchestrator.trigger_discovery_now()
+        assert result is not None
+    finally:
+        await orchestrator.shutdown(wait=True)
+        assert orchestrator.is_running is False
+        assert orchestrator.is_lifecycle_gate_open is False
