@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -132,6 +133,7 @@ class MonitoringOrchestrator:
 
         # Lifecycle gate: when True, all incoming worker executions are rejected
         self._is_shutting_down = False
+        self._is_starting = False
 
         # Per-company in-process lock to prevent overlapping runs within the same instance
         self._company_locks: dict[int, asyncio.Lock] = {}
@@ -199,54 +201,78 @@ class MonitoringOrchestrator:
         """Return True if the underlying scheduler is running."""
         return bool(self.scheduler.running)
 
+    @property
+    def is_lifecycle_gate_open(self) -> bool:
+        """Return True if the orchestrator lifecycle gate is open for worker executions."""
+        return not self._is_shutting_down
+
     async def start(self) -> None:
         """Start scheduler, initialize drain state, recover scans, and register jobs.
 
-        Preconditions (validation, SystemDrainState existence, and recovery) are performed
-        before recurring scheduler jobs are started. If any step fails, an exception is raised
-        and the scheduler is guaranteed not to be left running in a broken state.
+        The lifecycle gate is kept closed throughout startup so that neither scheduled
+        nor manually triggered worker runs can execute until the scheduler and all its
+        prerequisites are fully and successfully initialized.
+        If any step fails:
+            - The lifecycle gate remains closed.
+            - The scheduler is guaranteed stopped.
+            - Partially registered jobs are removed.
+            - A descriptive exception is propagated to the caller.
         """
-        if self.is_running:
-            logger.debug("MonitoringOrchestrator is already running.")
+        if self.is_running or self._is_starting:
+            logger.debug("MonitoringOrchestrator is already running or starting.")
             return
 
-        # 1. Reset lifecycle gate
-        self._is_shutting_down = False
+        self._is_starting = True
+        # 1. Keep the lifecycle gate closed throughout startup
+        self._is_shutting_down = True
 
-        # 2. Re-validate configuration before startup
-        self._validate_configuration()
-
-        # 3. Ensure SystemDrainState initialization is valid BEFORE recurring jobs can run
         try:
+            # 2. Re-validate configuration before startup
+            self._validate_configuration()
+
+            # 3. Ensure SystemDrainState initialization is valid BEFORE recurring jobs can run
             await self._ensure_system_drain_state()
+
+            # 4. Recover any scans left in RUNNING state prior to startup
+            try:
+                recovered_count = await self.recover_stale_scans()
+                if recovered_count > 0:
+                    logger.info("Startup recovery reset %d stale scans.", recovered_count)
+            except Exception as exc:
+                logger.error("Failed to recover stale scans on startup: %s", exc)
+                raise RuntimeError(f"Stale scan startup recovery failed: {exc}") from exc
+
+            # 5. Register background pipeline worker jobs
+            if self.enable_pipeline_jobs:
+                self.register_pipeline_jobs()
+
+            # 6. Synchronize company schedules
+            try:
+                await self.sync_company_schedules()
+            except Exception as exc:
+                logger.error("Failed to synchronize company schedules on startup: %s", exc)
+                raise RuntimeError(
+                    f"Company schedule startup synchronization failed: {exc}"
+                ) from exc
+
+            # 7. Start the underlying scheduler now that all preconditions are met
+            logger.info("Starting MonitoringOrchestrator scheduler...")
+            self.scheduler.start()
+
+            # 8. Only now open the lifecycle gate to permit worker executions
+            self._is_shutting_down = False
+            logger.info(
+                "MonitoringOrchestrator startup completed successfully. Lifecycle gate opened."
+            )
         except Exception:
             self._is_shutting_down = True
             if self.is_running:
                 self.scheduler.shutdown(wait=False)
+            with suppress(Exception):
+                self.scheduler.remove_all_jobs()
             raise
-
-        # 4. Recover any scans left in RUNNING state prior to startup
-        try:
-            recovered_count = await self.recover_stale_scans()
-            if recovered_count > 0:
-                logger.info("Startup recovery reset %d stale scans.", recovered_count)
-        except Exception as exc:
-            self._is_shutting_down = True
-            if self.is_running:
-                self.scheduler.shutdown(wait=False)
-            logger.error("Failed to recover stale scans on startup: %s", exc)
-            raise RuntimeError(f"Stale scan startup recovery failed: {exc}") from exc
-
-        # 5. Register background pipeline worker jobs
-        if self.enable_pipeline_jobs:
-            self.register_pipeline_jobs()
-
-        # 6. Synchronize company schedules
-        await self.sync_company_schedules()
-
-        # 7. Start the underlying scheduler now that all preconditions are met
-        logger.info("Starting MonitoringOrchestrator scheduler...")
-        self.scheduler.start()
+        finally:
+            self._is_starting = False
 
     async def shutdown(self, wait: bool = True) -> None:
         """Gracefully shut down scheduler and wait for in-flight executions.
