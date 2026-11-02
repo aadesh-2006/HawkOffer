@@ -1,6 +1,6 @@
 """Company repository implementation."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company import Company
@@ -28,3 +28,22 @@ class CompanyRepository(BaseRepository[Company, CompanyCreate, CompanyUpdate]):
         """List all active companies configured for monitoring."""
         result = await self.session.execute(select(Company).where(Company.is_active.is_(True)))
         return list(result.scalars().all())
+
+    async def list_paginated(
+        self, skip: int = 0, limit: int = 100, is_active: bool | None = None
+    ) -> list[Company]:
+        """List companies with optional active filter and stable ordering."""
+        stmt = select(Company)
+        if is_active is not None:
+            stmt = stmt.where(Company.is_active == is_active)
+        stmt = stmt.order_by(Company.name.asc(), Company.id.asc()).offset(skip).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_companies(self, is_active: bool | None = None) -> int:
+        """Count companies with optional active filter."""
+        stmt = select(func.count()).select_from(Company)
+        if is_active is not None:
+            stmt = stmt.where(Company.is_active == is_active)
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0

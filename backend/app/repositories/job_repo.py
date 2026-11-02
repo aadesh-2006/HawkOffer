@@ -1,8 +1,9 @@
 """Job repository implementation."""
 
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
@@ -48,10 +49,8 @@ class JobRepository(BaseRepository[Job, JobCreate, JobUpdate]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def filter_jobs(self, params: JobFilterParams) -> list[Job]:
-        """Query jobs with dynamic filtering criteria."""
-        stmt = select(Job)
-
+    def _apply_filter_conditions(self, stmt: Select[Any], params: JobFilterParams) -> Select[Any]:
+        """Apply query filtering conditions without pagination or ordering."""
         if params.company_id is not None:
             stmt = stmt.where(Job.company_id == params.company_id)
         if params.status:
@@ -69,10 +68,26 @@ class JobRepository(BaseRepository[Job, JobCreate, JobUpdate]):
                 Job.title.ilike(search_pattern, escape="\\")
                 | Job.location.ilike(search_pattern, escape="\\")
             )
+        return stmt
 
-        stmt = stmt.order_by(Job.first_seen_at.desc()).offset(params.offset).limit(params.limit)
+    async def filter_jobs(self, params: JobFilterParams) -> list[Job]:
+        """Query jobs with dynamic filtering criteria and stable ordering."""
+        stmt = select(Job)
+        stmt = self._apply_filter_conditions(stmt, params)
+        stmt = (
+            stmt.order_by(Job.first_seen_at.desc(), Job.id.desc())
+            .offset(params.offset)
+            .limit(params.limit)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_filtered(self, params: JobFilterParams) -> int:
+        """Count total matching jobs without loading entity rows."""
+        stmt = select(func.count()).select_from(Job)
+        stmt = self._apply_filter_conditions(stmt, params)
+        result = await self.session.execute(stmt)
+        return result.scalar() or 0
 
     async def update_status(
         self, job_id: int, status: str, last_seen_at: datetime | None = None

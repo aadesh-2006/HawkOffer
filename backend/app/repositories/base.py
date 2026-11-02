@@ -3,7 +3,7 @@
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.base import Base
@@ -28,6 +28,11 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         """Fetch paginated records."""
         result = await self.session.execute(select(self.model).offset(skip).limit(limit))
         return list(result.scalars().all())
+
+    async def count(self) -> int:
+        """Count total records for the entity."""
+        result = await self.session.execute(select(func.count()).select_from(self.model))
+        return result.scalar() or 0
 
     async def create(self, schema: CreateSchemaType | dict[str, Any]) -> ModelType:
         """Create and persist a new record."""

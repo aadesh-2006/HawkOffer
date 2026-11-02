@@ -47,6 +47,27 @@ class NotificationRepository(BaseRepository[Notification, NotificationCreate, No
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    async def count_notifications(
+        self,
+        profile_id: int | None = None,
+        status: str | None = None,
+        include_dismissed: bool = False,
+    ) -> int:
+        """Count notifications matching the given filters."""
+        query = select(func.count(Notification.id))
+
+        if profile_id is not None:
+            query = query.where(Notification.profile_id == profile_id)
+
+        if status is not None:
+            query = query.where(Notification.status == status)
+        elif not include_dismissed:
+            query = query.where(Notification.status != NotificationStatus.DISMISSED)
+
+        result = await self.session.execute(query)
+        count = result.scalar()
+        return count or 0
+
     async def get_unread_count(self, profile_id: int | None = None) -> int:
         """Count unread notifications, optionally filtered by profile."""
         query = select(func.count(Notification.id)).where(

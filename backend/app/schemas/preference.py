@@ -51,5 +51,6 @@ class PreferenceProfileRead(PreferenceProfileBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    revision: int = 1
     created_at: datetime
     updated_at: datetime
