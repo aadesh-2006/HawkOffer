@@ -135,6 +135,7 @@ class MonitoringOrchestrator:
         self._is_shutting_down = False
         self._is_starting = False
         self._shutdown_requested = False
+        self._generation = 0
         self._startup_lock = asyncio.Lock()
 
         # Per-company in-process lock to prevent overlapping runs within the same instance
@@ -208,13 +209,13 @@ class MonitoringOrchestrator:
         """Return True if the orchestrator lifecycle gate is open for worker executions."""
         return not self._is_shutting_down
 
-    def _check_shutdown_requested(self) -> None:
+    def _check_shutdown_requested(self, call_generation: int) -> None:
         """Check if shutdown was requested while startup was in progress.
 
         Raises:
             RuntimeError: If shutdown was requested during startup.
         """
-        if self._shutdown_requested:
+        if self._shutdown_requested or self._generation != call_generation:
             raise RuntimeError("MonitoringOrchestrator startup aborted: shutdown was requested.")
 
     async def start(self) -> None:
@@ -235,25 +236,35 @@ class MonitoringOrchestrator:
             logger.debug("MonitoringOrchestrator is already running.")
             return
 
+        call_generation = self._generation
+
         async with self._startup_lock:
             # Re-check under lock in case another task completed startup
             if self.is_running:
                 logger.debug("MonitoringOrchestrator is already running.")
                 return
 
+            # If shutdown was requested or a shutdown finished while this call was queued, abort
+            if self._shutdown_requested or self._generation != call_generation:
+                logger.warning(
+                    "MonitoringOrchestrator startup rejected: shutdown is pending or completed."
+                )
+                raise RuntimeError(
+                    "MonitoringOrchestrator startup aborted: shutdown was requested."
+                )
+
             self._is_starting = True
             # 1. Keep the lifecycle gate closed throughout startup
             self._is_shutting_down = True
-            self._shutdown_requested = False
 
             try:
                 # 2. Re-validate configuration before startup
                 self._validate_configuration()
-                self._check_shutdown_requested()
+                self._check_shutdown_requested(call_generation)
 
                 # 3. Ensure SystemDrainState initialization is valid BEFORE recurring jobs can run
                 await self._ensure_system_drain_state()
-                self._check_shutdown_requested()
+                self._check_shutdown_requested(call_generation)
 
                 # 4. Recover any scans left in RUNNING state prior to startup
                 try:
@@ -266,13 +277,13 @@ class MonitoringOrchestrator:
                     logger.error("Failed to recover stale scans on startup: %s", exc)
                     raise RuntimeError(f"Stale scan startup recovery failed: {exc}") from exc
 
-                self._check_shutdown_requested()
+                self._check_shutdown_requested(call_generation)
 
                 # 5. Register background pipeline worker jobs
                 if self.enable_pipeline_jobs:
                     self.register_pipeline_jobs()
 
-                self._check_shutdown_requested()
+                self._check_shutdown_requested(call_generation)
 
                 # 6. Synchronize company schedules
                 try:
@@ -285,7 +296,7 @@ class MonitoringOrchestrator:
                         f"Company schedule startup synchronization failed: {exc}"
                     ) from exc
 
-                self._check_shutdown_requested()
+                self._check_shutdown_requested(call_generation)
 
                 # 7. Start the underlying scheduler now that all preconditions are met
                 logger.info("Starting MonitoringOrchestrator scheduler...")
@@ -327,6 +338,12 @@ class MonitoringOrchestrator:
 
         # 2. Coordinate with startup: wait for any in-progress startup attempt to finish or abort
         async with self._startup_lock:
+            # Advance lifecycle generation and reset pending shutdown request under lock
+            # so that future start() calls invoked after this shutdown completes are recognized
+            # as new, fresh startup attempts rather than queued ones.
+            self._generation += 1
+            self._shutdown_requested = False
+
             # 3. Stop scheduler from dispatching new jobs
             if self.is_running:
                 logger.info("Shutting down MonitoringOrchestrator scheduler (wait=%s)...", wait)
