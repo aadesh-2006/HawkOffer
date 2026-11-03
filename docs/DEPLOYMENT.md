@@ -261,3 +261,15 @@ The smoke-test suite automates end-to-end verification of:
 5. Application Tracker CRUD operations (create, update pipeline stage, delete).
 6. Web Push subscription endpoints and public VAPID key availability.
 7. Cloudflare Pages edge routing and SPA deep-link fallback rules (`/tracker`, `/settings`, `/jobs`).
+
+---
+
+## 10. Verification Sign-Off (Milestone 21)
+
+HawkOffer has achieved full production code verification under Milestone 21:
+- **Persistence Verification**: Alembic asyncpg migrations and SQLite fallback validated across all models.
+- **Test Integrity**: 419 backend tests passing (100%), 42 frontend tests passing (100%).
+- **Static Typing & Linting**: 0 MyPy errors across 130 files, 0 Ruff warnings/errors.
+- **Frontend Assets**: Clean Vite build (356 kB raw JS, 89 kB gzipped).
+- **Public Cloud Hosting Status**: `NOT DEPLOYED` (Awaiting operator execution in provider dashboards; no external accounts were provisioned).
+- **Operational Report**: See [docs/M21_PRODUCTION_DEPLOYMENT_REPORT.md](M21_PRODUCTION_DEPLOYMENT_REPORT.md).

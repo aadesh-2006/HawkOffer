@@ -399,3 +399,24 @@ flowchart LR
      - 42 frontend tests passed (100%).
      - MyPy and Ruff passed with 0 errors across 130 source files.
      - Frontend production build compiled cleanly in 4.57s.
+
+---
+
+### Milestone 21: First Public Deployment & Production Verification
+*Status: PRODUCTION VERIFIED (Local test suites 100% verified; Public Cloud Hosting status: NOT DEPLOYED pending operator credentials)*  
+*Objective: Complete formal preflight audit, verify all production quality gates, validate failure-recovery and secret boundaries, and establish the operator release protocol.*
+
+- **Delivered Capabilities**:
+  1. **Production Verification & Quality Sign-Off**:
+     - 419 backend tests passed (100% pass rate).
+     - 42 frontend Vitest tests passed (100% pass rate).
+     - Static typing: MyPy verified with 0 errors across 130 source files.
+     - Linting: Ruff verified with 0 warnings or errors across the entire repository.
+     - Production bundle: Vite compiled `frontend/dist` in 4.01s (89.77 kB gzipped JavaScript).
+  2. **Audit & Safety Boundary Distinction**:
+     - Strictly enforced the boundary between deployment configuration readiness, public cloud hosting, and production verification.
+     - Explicitly documented Cloud Hosting status as `NOT DEPLOYED` (no third-party cloud accounts created or billed) and code release status as `PRODUCTION VERIFIED`.
+  3. **Operational Documentation & Runbook**:
+     - Authored authoritative `docs/M21_PRODUCTION_DEPLOYMENT_REPORT.md`.
+     - Documented turnkey operator steps for Cloudflare Pages, Render, Supabase / Neon PostgreSQL, and GitHub Actions cron runner.
+     - Provided automated post-launch smoke-test instructions via `scripts/smoke_test.py`.
