@@ -139,8 +139,8 @@ All automated validation, native compilation, packaging, and installer lifecycle
 - **MSVC Toolchain & Environment**: Microsoft Visual Studio Build Tools 2022 v17.14.44 configured with MSVC Linker v14.44.35229.0 and Windows SDK 10.0.26100.0.
 - **Native Tauri Release Executable**: Compiled via `cargo build --release` (`src-tauri/target/release/hawkoffer.exe`, 9.28 MB / 9,281,024 bytes).
 - **Native NSIS Installer Generation**: Produced `src-tauri/target/release/bundle/nsis/HawkOffer_0.1.0_x64-setup.exe` and copied to `dist/HawkOffer_0.1.0_x64-setup.exe`:
-  - **Installer Size**: 25.96 MB (27,216,927 bytes).
-  - **Installer SHA-256**: `3fb5bbc5893c9706c03e744cabd38fcf70a4a5514ba3571fe764a358bb8b9201`.
+  - **Installer Size**: 25.96 MB (27,217,659 bytes).
+  - **Installer SHA-256**: `d7b00e63a12b971c1df63aea45251854ae11c383ee750a75fc68ce70b223b3ab`.
 - **Actual Installer Execution**: Executed silent install (`HawkOffer_0.1.0_x64-setup.exe /S`) verifying installation to `%LOCALAPPDATA%\HawkOffer\` (`hawkoffer.exe`, `hawkoffer-backend.exe`, `uninstall.exe`).
 - **Installed-Application Acceptance Verification**: Ran automated acceptance harness (`scripts/test_installed_app.py`) with 9/9 stages passing:
   1. Spawns installed `hawkoffer.exe` and verifies backend sidecar startup listening on `127.0.0.1:8765`.
