@@ -67,3 +67,5 @@ dist/
 
 # Tauri
 src-tauri/target/
+src-tauri/binaries/*.exe
+*.exe
