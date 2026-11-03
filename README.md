@@ -84,12 +84,27 @@ For comprehensive architecture and deployment guides, see:
 - [x] **Milestone 16, 16.1 & 16.2**: Web Push Notifications (VAPID RFC 8291) & Anti-SSRF Protection
 - [x] **Milestone 17**: Public SaaS Web Dashboard, Company Catalog & Application Tracker
 - [x] **Milestone 18**: Zero-Budget Deployment Automation & Cloud Readiness (Cloudflare Pages, Render, Supabase, Docker, GitHub Actions Cron)
+- [x] **Milestone 19**: First Public Deployment & Production Validation (Startup Handshake, Automated Smoke Testing & Hardening)
 
 For detailed task breakdowns and acceptance criteria, see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
 ## 🧪 Developer Guide: Running Tests & Migrations
+
+### Running Automated Production Smoke Tests
+To verify a local daemon, Docker container, or live cloud deployment:
+
+```bash
+# Verify local instance
+python scripts/smoke_test.py --api-url http://127.0.0.1:8765/api/v1 --cron-secret <secret>
+
+# Verify live deployment (Render + Cloudflare Pages)
+python scripts/smoke_test.py \
+    --api-url https://hawkoffer-api.onrender.com/api/v1 \
+    --web-url https://hawkoffer.pages.dev \
+    --cron-secret <secret>
+```
 
 ### Running Backend Tests
 Activate the virtual environment in `backend/` and execute `pytest`:

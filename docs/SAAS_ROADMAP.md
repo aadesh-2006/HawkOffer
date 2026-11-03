@@ -341,3 +341,39 @@ flowchart LR
   - Ruff linter passed with 0 errors across entire application codebase.
   - Frontend production build successfully compiled in 4.57s (`dist/assets/index-CE8hI_bO.js` at 89.77 kB gzipped).
   - Backwards compatibility strictly preserved for desktop Tauri runtime and local SQLite databases.
+
+---
+
+### Milestone 19: First Public Deployment & Production Validation
+*Status: COMPLETED (Verified across 419 backend tests, 42 frontend tests, 0 MyPy/Ruff errors, automated smoke-test suite)*  
+*Objective: Audit deployment configurations, harden startup and database ordering, eliminate external cron edge cases, and establish an automated production smoke-test suite for live deployment validation.*
+
+- **Delivered Capabilities**:
+  1. **Production Configuration Hardening & Secret Validation**:
+     - Strict prohibition of wildcard `'*'` CORS origins in `Settings.parse_cors_origins` to prevent credential exposure.
+     - Implemented `validate_production_jwt_secret()` and `validate_production_configuration()` on `Settings`.
+     - Hardened FastAPI `lifespan` in `app/main.py`: raises `RuntimeError` immediately during container startup if running with `HAWKOFFER_ENV=production` and missing/insecure JWT or cron secrets, preventing traffic service with insecure keys.
+  2. **External Cron Availability Under Decoupled Schedulers**:
+     - Fixed `app.state.orchestrator` lifecycle in `app/main.py`: ensures the orchestrator instance is always initialized when `HAWKOFFER_START_INTERNAL_SCHEDULER=false`.
+     - Prevents duplicate internal background schedulers in multi-replica containers while ensuring external GitHub Actions cron calls to `POST /api/v1/internal/cron/monitor` execute successfully without 503 errors.
+  3. **Database Startup Handshake & Entrypoint Resilience**:
+     - Created `app.database.wait_for_db` probing database connectivity with configurable timeout (`DB_WAIT_TIMEOUT`, default 30s) and exponential backoff.
+     - Prevents container crashes during PostgreSQL cold-starts or Docker Compose initialization before running Alembic migrations.
+     - Masked database credentials in connection probe logs (`***:***@host:port/db`).
+     - Enhanced `backend/scripts/docker-entrypoint.sh` to execute the database readiness probe and support arbitrary CLI commands (`exec "$@"`).
+  4. **Automated End-to-End Smoke-Test Tooling**:
+     - Authored standalone CLI verification script `scripts/smoke_test.py` supporting both local daemons and live public URLs (`--api-url`, `--web-url`, `--cron-secret`).
+     - Automatically verifies:
+       - Root metadata and system health endpoints (`GET /` and `GET /api/v1/health`).
+       - Cron authentication rejection on missing/invalid secret and execution on valid secret.
+       - User registration, JWT login, and authenticated identity retrieval (`GET /auth/me`).
+       - Company catalog discovery and Application Tracker CRUD operations (create, patch stage, delete).
+       - Web Push public VAPID key and subscription endpoints.
+       - Cloudflare Pages SPA deep link fallback routing (`/tracker`, `/settings`, `/jobs`).
+  5. **Verification & Quality Gates**:
+     - 11 new M19 validation and hardening tests passed (`tests/test_m19_deployment_validation.py`).
+     - Full backend test suite: 419 passed (100%).
+     - Full frontend test suite: 42 passed (100%).
+     - MyPy static typing: 0 errors across 130 source files.
+     - Ruff linter: 0 errors across application and test suites.
+     - Frontend production build clean.

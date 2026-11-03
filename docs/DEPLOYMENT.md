@@ -230,3 +230,34 @@ Set up a weekly GitHub Actions workflow that executes `pg_dump` and uploads the 
 3. **Database Connection Limits**:
    - *Behavior*: Free serverless databases (Neon/Supabase) enforce connection limits (e.g., 20-50 concurrent connections).
    - *Mitigation*: HawkOffer uses a bounded async connection pool (`pool_size=5`, `max_overflow=10`) configured in `app/database/session.py`.
+4. **Database Cold-Starts & Startup Order**:
+   - *Behavior*: In serverless or containerized environments, PostgreSQL may be paused or initializing when the application container starts.
+   - *Mitigation*: The container entrypoint executes `python -m app.database.wait_for_db` with exponential backoff and configurable timeout (`DB_WAIT_TIMEOUT`, default 30s) before executing Alembic migrations.
+
+---
+
+## 9. Automated Production Smoke-Test Suite
+
+To verify any newly deployed instance or local container cluster, execute the automated smoke-test suite:
+
+```bash
+# Verify local container or development daemon
+python scripts/smoke_test.py \
+    --api-url http://127.0.0.1:8000/api/v1 \
+    --cron-secret <your-cron-secret>
+
+# Verify live public deployment (Render + Cloudflare Pages)
+python scripts/smoke_test.py \
+    --api-url https://hawkoffer-api.onrender.com/api/v1 \
+    --web-url https://hawkoffer.pages.dev \
+    --cron-secret <your-cron-secret>
+```
+
+The smoke-test suite automates end-to-end verification of:
+1. Root API metadata and system health status (`GET /` and `GET /api/v1/health`).
+2. Cron secret authentication enforcement (rejection on missing/invalid secret, execution on valid secret).
+3. Complete user authentication lifecycle (registration, JWT issuance, identity retrieval at `GET /auth/me`).
+4. Company catalog discovery (`GET /api/v1/companies`).
+5. Application Tracker CRUD operations (create, update pipeline stage, delete).
+6. Web Push subscription endpoints and public VAPID key availability.
+7. Cloudflare Pages edge routing and SPA deep-link fallback rules (`/tracker`, `/settings`, `/jobs`).
