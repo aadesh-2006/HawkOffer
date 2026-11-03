@@ -1,5 +1,6 @@
 """Web Push subscription management and public VAPID endpoints."""
 
+import hashlib
 import logging
 from typing import Annotated
 from urllib.parse import urlparse
@@ -28,13 +29,19 @@ router = APIRouter(prefix="/push", tags=["Web Push"])
 
 
 def redact_endpoint(endpoint: str) -> str:
-    """Redact sensitive push token from gateway endpoint for safe logging."""
+    """Redact sensitive push endpoint URL for safe logging.
+
+    Never exposes path parameters, tokens, or token suffixes.
+    Outputs the origin plus a SHA-256 fingerprint for correlation.
+    """
+    if not endpoint:
+        return "[EMPTY_ENDPOINT]"
     try:
         parsed = urlparse(endpoint)
-        token_suffix = endpoint[-12:] if len(endpoint) > 12 else endpoint
-        return f"{parsed.scheme}://{parsed.netloc}/...{token_suffix}"
+        token_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:8]
+        return f"{parsed.scheme}://{parsed.netloc}/[token_hash={token_hash}]"
     except Exception:
-        return "[REDACTED_ENDPOINT]"
+        return "[MALFORMED_ENDPOINT]"
 
 
 @router.get(

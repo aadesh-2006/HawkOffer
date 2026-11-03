@@ -1,9 +1,14 @@
-"""Asynchronous Web Push dispatcher service with strict concurrency fencing."""
+"""Asynchronous Web Push dispatcher service with strict concurrency fencing.
+
+Includes lease management, heartbeat renewal, and anti-SSRF protections.
+"""
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -11,29 +16,73 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.core.vapid import get_vapid_claims, get_vapid_private_key
+from app.core.vapid import get_vapid_claims, get_vapid_private_key, validate_production_vapid
 from app.models.company import Company
 from app.models.job import Job
 from app.models.notification import Notification
 from app.models.push import NotificationPushDelivery, PushSubscription
 from app.schemas.notification import DeliveryStatus
-from app.schemas.push import PushDeliveryStatus
+from app.schemas.push import PushDeliveryStatus, validate_push_endpoint_url
 
 logger = logging.getLogger(__name__)
 
 
 def redact_endpoint(endpoint: str) -> str:
-    """Redact sensitive push token from gateway endpoint for safe logging."""
+    """Redact sensitive push endpoint URL for safe logging.
+
+    Never exposes path parameters, tokens, or token suffixes.
+    Outputs the origin plus a deterministic SHA-256 fingerprint for correlation:
+    e.g. 'https://fcm.googleapis.com/[token_hash=a1b2c3d4]'
+    """
+    if not endpoint:
+        return "[EMPTY_ENDPOINT]"
     try:
         parsed = urlparse(endpoint)
-        token_suffix = endpoint[-12:] if len(endpoint) > 12 else endpoint
-        return f"{parsed.scheme}://{parsed.netloc}/...{token_suffix}"
+        token_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:8]
+        return f"{parsed.scheme}://{parsed.netloc}/[token_hash={token_hash}]"
     except Exception:
-        return "[REDACTED_ENDPOINT]"
+        return "[MALFORMED_ENDPOINT]"
+
+
+def sanitize_error_message(message: str, endpoint: str | None = None) -> str:
+    """Scrub sensitive endpoint tokens, URLs, and cryptographic material from error messages."""
+    if not message:
+        return ""
+    sanitized = str(message)
+    if endpoint:
+        sanitized = sanitized.replace(endpoint, redact_endpoint(endpoint))
+
+    # Redact any embedded HTTPS URLs that might contain full tokens
+    sanitized = re.sub(
+        r"https?://[^\s\"'>]+",
+        lambda m: redact_endpoint(m.group(0)),
+        sanitized,
+    )
+    return sanitized[:255]
+
+
+def create_safe_push_session() -> requests.Session:
+    """Create a hardened requests Session with redirect blocking for anti-SSRF protection."""
+    session = requests.Session()
+    session.max_redirects = 0
+
+    def _block_redirects(
+        response: requests.Response, *args: Any, **kwargs: Any
+    ) -> requests.Response:
+        if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+            raise WebPushDispatchError(
+                status_code=response.status_code,
+                message=f"Unauthorized HTTP redirect ({response.status_code}) blocked",
+            )
+        return response
+
+    session.hooks["response"].append(_block_redirects)
+    return session
 
 
 class WebPushDispatchError(Exception):
@@ -51,7 +100,7 @@ class WebPushDispatchError(Exception):
 
     @property
     def is_transient(self) -> bool:
-        """Returns True if failure is temporary and retryable (HTTP 429, 5xx, timeout)."""
+        """Returns True if failure is temporary and retryable (HTTP 408, 429, 5xx)."""
         return self.status_code in (408, 429, 500, 502, 503, 504)
 
 
@@ -78,12 +127,13 @@ class WebPushDispatcher:
     - In-app notification records are NEVER deleted or altered if a push fails.
     - Single-owner delivery lease with atomic eligibility revalidation prevents duplicate pushes.
     - Fenced state updates guarantee that an expired lease owner can never overwrite a newer owner.
-    - Lease heartbeat renewal ensures long send operations do not expire mid-batch.
+    - Pre-send heartbeats verify ownership before each individual device outbound call.
     - Device-level tracking via NotificationPushDelivery ensures already-delivered devices
       do not receive duplicate pushes during retries.
     - HTTP 410 Gone / 404 Not Found subscriptions are automatically pruned.
     - Transient provider errors trigger bounded exponential backoff with jitter.
-    - Endpoints and cryptographic secrets are strictly redacted from logs.
+    - Endpoints and cryptographic secrets are strictly redacted from logs and error columns.
+    - Anti-SSRF validation rejects private/reserved IP resolutions and blocks redirects.
     """
 
     def __init__(
@@ -106,6 +156,22 @@ class WebPushDispatcher:
         vapid_claims: dict[str, str],
     ) -> int:
         """Synchronously execute RFC 8291 / 8292 Web Push call in a worker thread."""
+        endpoint = str(subscription_info.get("endpoint", ""))
+
+        # 1. Pre-dispatch SSRF validation and destination check
+        try:
+            validate_push_endpoint_url(endpoint)
+        except Exception as exc:
+            sanitized = sanitize_error_message(str(exc), endpoint=endpoint)
+            logger.warning(
+                "SSRF / destination validation rejected endpoint %s: %s",
+                redact_endpoint(endpoint),
+                sanitized,
+            )
+            raise WebPushDispatchError(status_code=400, message=sanitized) from exc
+
+        # 2. Execute push request using hardened, redirect-blocked HTTP session
+        session = create_safe_push_session()
         try:
             from pywebpush import WebPushException, webpush
 
@@ -115,18 +181,28 @@ class WebPushDispatcher:
                 vapid_private_key=vapid_private_key,
                 vapid_claims=vapid_claims,
                 timeout=10,
+                requests_session=session,
             )
             return int(getattr(response, "status_code", 201))
+        except WebPushDispatchError:
+            raise
         except WebPushException as exc:
             status_code = getattr(getattr(exc, "response", None), "status_code", 500)
-            logger.debug("pywebpush WebPushException HTTP %s: %s", status_code, exc)
-            raise WebPushDispatchError(status_code=status_code, message=str(exc)) from exc
+            sanitized = sanitize_error_message(str(exc), endpoint=endpoint)
+            logger.debug("pywebpush WebPushException HTTP %s: %s", status_code, sanitized)
+            raise WebPushDispatchError(status_code=status_code, message=sanitized) from exc
         except TimeoutError as exc:
-            logger.debug("pywebpush timeout error: %s", exc)
-            raise WebPushDispatchError(status_code=408, message="Push service timeout") from exc
+            sanitized = sanitize_error_message(str(exc), endpoint=endpoint)
+            logger.debug("pywebpush timeout error: %s", sanitized)
+            raise WebPushDispatchError(
+                status_code=408, message=f"Push service timeout: {sanitized}"
+            ) from exc
         except Exception as exc:
-            logger.debug("pywebpush generic exception: %s", exc)
-            raise WebPushDispatchError(status_code=500, message=str(exc)) from exc
+            sanitized = sanitize_error_message(str(exc), endpoint=endpoint)
+            logger.debug("pywebpush generic exception: %s", sanitized)
+            raise WebPushDispatchError(status_code=500, message=sanitized) from exc
+        finally:
+            session.close()
 
     async def _claim_pending_notifications(
         self, session: AsyncSession
@@ -218,6 +294,13 @@ class WebPushDispatcher:
         start_perf = time.perf_counter()
         result = PushDispatchResult()
 
+        # Validate production VAPID configuration early
+        if settings.is_production:
+            is_valid, err = validate_production_vapid()
+            if not is_valid:
+                logger.error("VAPID production validation failed before dispatch: %s", err)
+                raise RuntimeError(f"VAPID production validation failed: {err}")
+
         async with self.session_factory() as claim_session:
             claimed_ids, token = await self._claim_pending_notifications(claim_session)
 
@@ -231,7 +314,8 @@ class WebPushDispatcher:
             vapid_priv = get_vapid_private_key()
             vapid_claims = get_vapid_claims()
         except Exception as exc:
-            logger.error("VAPID resolution failed; marking batch for retry: %s", exc)
+            sanitized = sanitize_error_message(str(exc))
+            logger.error("VAPID resolution failed; marking batch for retry: %s", sanitized)
             async with self.session_factory() as rollback_session:
                 await rollback_session.execute(
                     update(Notification)
@@ -275,30 +359,7 @@ class WebPushDispatcher:
         now = datetime.now(UTC)
 
         async with self.session_factory() as session:
-            # 1. Lease renewal & fenced verification before network calls
-            renew_stmt = (
-                update(Notification)
-                .where(
-                    Notification.id == notif_id,
-                    Notification.delivery_lease_token == token,
-                    Notification.delivery_status == DeliveryStatus.PROCESSING,
-                )
-                .values(
-                    delivery_lease_expires_at=now + timedelta(seconds=self.lease_ttl_seconds)
-                )
-                .returning(Notification.id)
-            )
-            renew_res = await session.execute(renew_stmt)
-            if not renew_res.scalar_one_or_none():
-                logger.warning(
-                    "Fenced lease check rejected for notification %d: lease expired or revoked",
-                    notif_id,
-                )
-                return
-            await session.commit()
-
-        async with self.session_factory() as session:
-            # 2. Fetch notification details
+            # 1. Fetch notification details
             stmt = select(Notification).where(Notification.id == notif_id)
             notif = (await session.execute(stmt)).scalar_one_or_none()
             if not notif or notif.delivery_lease_token != token:
@@ -307,7 +368,7 @@ class WebPushDispatcher:
                 )
                 return
 
-            # 3. Fetch user's active push subscriptions
+            # 2. Fetch user's active push subscriptions
             sub_stmt = (
                 select(PushSubscription)
                 .where(PushSubscription.user_id == notif.user_id)
@@ -315,7 +376,7 @@ class WebPushDispatcher:
             )
             subs = list((await session.execute(sub_stmt)).scalars().all())
 
-            # 4. If user has zero push subscriptions, complete cleanly as NOT_REQUIRED
+            # 3. If user has zero push subscriptions, complete cleanly as NOT_REQUIRED
             # Core Invariant: In-app notification read/unread state is NEVER modified
             if not subs:
                 fenced_finish = (
@@ -336,7 +397,7 @@ class WebPushDispatcher:
                 result.completed_notifications += 1
                 return
 
-            # 5. Filter out subscriptions that already received this notification (idempotency)
+            # 4. Filter out subscriptions that already received this notification (idempotency)
             delivered_stmt = select(NotificationPushDelivery.subscription_id).where(
                 NotificationPushDelivery.notification_id == notif.id,
                 NotificationPushDelivery.status == PushDeliveryStatus.DELIVERED.value,
@@ -365,7 +426,7 @@ class WebPushDispatcher:
                 result.completed_notifications += 1
                 return
 
-            # 6. Load Job & Company for notification payload
+            # 5. Load Job & Company for notification payload
             job_stmt = (
                 select(Job, Company.name.label("company_name"))
                 .join(Company, Company.id == Job.company_id)
@@ -408,11 +469,39 @@ class WebPushDispatcher:
                 for d in (await session.execute(existing_del_stmt)).scalars().all()
             }
 
-            # 7. Dispatch to each pending subscription
+            # 6. Dispatch to each pending device subscription
             device_failures = 0
             dead_subscription_ids: list[int] = []
 
             for sub in pending_subs:
+                # 6a. Revalidate ownership and renew heartbeat immediately before EACH device send
+                renew_now = datetime.now(UTC)
+                renew_stmt = (
+                    update(Notification)
+                    .where(
+                        Notification.id == notif_id,
+                        Notification.delivery_lease_token == token,
+                        Notification.delivery_status == DeliveryStatus.PROCESSING,
+                    )
+                    .values(
+                        delivery_lease_expires_at=renew_now
+                        + timedelta(seconds=self.lease_ttl_seconds)
+                    )
+                    .returning(Notification.id)
+                )
+                renew_res = await session.execute(renew_stmt)
+                if not renew_res.scalar_one_or_none():
+                    logger.warning(
+                        "Fenced lease check rejected before sending to device %d: "
+                        "lease for notification %d expired or was reclaimed",
+                        sub.id,
+                        notif_id,
+                    )
+                    # Immediate stop: do not dispatch to this or any remaining devices
+                    await session.rollback()
+                    return
+                await session.commit()
+
                 result.attempted_pushes += 1
                 sub_info = {
                     "endpoint": sub.endpoint,
@@ -436,26 +525,29 @@ class WebPushDispatcher:
                         dev_rec = existing_deliveries[sub.id]
                         dev_rec.status = PushDeliveryStatus.DELIVERED.value
                         dev_rec.attempt_count += 1
-                        dev_rec.delivered_at = now
+                        dev_rec.delivered_at = renew_now
                         dev_rec.error_message = None
-                        dev_rec.updated_at = now
+                        dev_rec.updated_at = renew_now
                     else:
                         dev_rec = NotificationPushDelivery(
                             notification_id=notif.id,
                             subscription_id=sub.id,
                             status=PushDeliveryStatus.DELIVERED.value,
                             attempt_count=1,
-                            delivered_at=now,
-                            created_at=now,
-                            updated_at=now,
+                            delivered_at=renew_now,
+                            created_at=renew_now,
+                            updated_at=renew_now,
                         )
                         session.add(dev_rec)
                         existing_deliveries[sub.id] = dev_rec
-                    sub.last_used_at = now
+                    sub.last_used_at = renew_now
                     sub.failure_count = 0
+                    await session.commit()
 
                 except WebPushDispatchError as exc:
                     redacted = redact_endpoint(sub.endpoint)
+                    sanitized_err = sanitize_error_message(exc.message, endpoint=sub.endpoint)
+
                     if exc.is_unregistered:
                         # Subscription permanently dead / unregistered by user (404 / 410)
                         logger.info(
@@ -467,13 +559,13 @@ class WebPushDispatcher:
                         result.pruned_subscriptions += 1
                         dead_subscription_ids.append(sub.id)
                     else:
-                        # Transient failure (HTTP 429, 500, 502, 503, 504, timeout)
+                        # Transient failure (HTTP 408, 429, 500, 502, 503, 504)
                         logger.warning(
                             "Transient Web Push failure on sub %d (HTTP %d) endpoint %s: %s",
                             sub.id,
                             exc.status_code,
                             redacted,
-                            exc.message[:100],
+                            sanitized_err[:100],
                         )
                         result.transient_failures += 1
                         device_failures += 1
@@ -491,22 +583,23 @@ class WebPushDispatcher:
                             dev_rec = existing_deliveries[sub.id]
                             dev_rec.status = dev_status
                             dev_rec.attempt_count += 1
-                            dev_rec.error_message = exc.message[:255]
-                            dev_rec.updated_at = now
+                            dev_rec.error_message = sanitized_err
+                            dev_rec.updated_at = renew_now
                         else:
                             dev_rec = NotificationPushDelivery(
                                 notification_id=notif.id,
                                 subscription_id=sub.id,
                                 status=dev_status,
                                 attempt_count=1,
-                                error_message=exc.message[:255],
-                                created_at=now,
-                                updated_at=now,
+                                error_message=sanitized_err,
+                                created_at=renew_now,
+                                updated_at=renew_now,
                             )
                             session.add(dev_rec)
                             existing_deliveries[sub.id] = dev_rec
+                        await session.commit()
 
-            # 8. Prune dead subscriptions from database
+            # 7. Prune dead subscriptions from database
             if dead_subscription_ids:
                 await session.execute(
                     delete(PushSubscription).where(
@@ -514,7 +607,7 @@ class WebPushDispatcher:
                     )
                 )
 
-            # 9. Calculate notification-level delivery status
+            # 8. Calculate notification-level delivery status
             new_attempts = notif.delivery_attempts
             delivered_at_val = notif.delivered_at
             last_err_val = None
@@ -530,7 +623,7 @@ class WebPushDispatcher:
                 else:
                     # All active devices succeeded!
                     final_status = DeliveryStatus.SENT
-                    delivered_at_val = now
+                    delivered_at_val = datetime.now(UTC)
                 result.completed_notifications += 1
             else:
                 # One or more devices failed transiently; schedule retry or mark exhausted
@@ -543,10 +636,10 @@ class WebPushDispatcher:
                     final_status = DeliveryStatus.RETRY
                     base_delay = 10 * (2**new_attempts)
                     backoff = min(300, int(base_delay + random.uniform(1, 5)))
-                    next_attempt_val = now + timedelta(seconds=backoff)
+                    next_attempt_val = datetime.now(UTC) + timedelta(seconds=backoff)
                     result.retry_notifications += 1
 
-            # 10. Fenced final state update verifying expected lease token
+            # 9. Fenced final state update verifying expected lease token
             fenced_update = (
                 update(Notification)
                 .where(

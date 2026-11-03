@@ -17,7 +17,8 @@ flowchart LR
     M15 --> M15_1["M15.1: Production Safety & Hardening<br/>(COMPLETED)"]
     M15_1 --> M16["M16: Web Push Notifications (RFC 8291)<br/>(COMPLETED)"]
     M16 --> M16_1["M16.1: Push Reliability & Hardening<br/>(COMPLETED)"]
-    M16_1 --> M17["M17: Public Web Dashboard & Application Tracking"]
+    M16_1 --> M16_2["M16.2: Push Final Security & Gate<br/>(COMPLETED)"]
+    M16_2 --> M17["M17: Public Web Dashboard & Application Tracking"]
     M17 --> M18["M18: Zero-Budget Cloud Deployment & Acceptance"]
 ```
 
@@ -223,6 +224,36 @@ flowchart LR
   - Total frontend tests: 34 passed (100%).
   - MyPy and Ruff passed with 0 errors across 126 source files.
   - Frontend production build clean in 4.20s.
+
+---
+
+### Milestone 16.2: Web Push Final Security & Reliability Gate
+*Status: COMPLETED (Verified across 402 backend tests, 34 frontend tests, 9 new M16.2 gate tests)*  
+*Objective: Audit and enforce outbound anti-SSRF protection, complete token redaction, per-device pre-send heartbeat fencing, and desktop backwards compatibility.*
+
+- **Delivered Capabilities**:
+  1. **Outbound Push Endpoint Anti-SSRF Protection**:
+     - Strict HTTPS validation and non-standard port rejection.
+     - Comprehensive IP range filtering covering IPv4 and IPv6 loopback, link-local, private, unspecified, multicast, and reserved ranges.
+     - Real-time DNS resolution check via `socket.getaddrinfo(hostname, 443)` rejecting domains resolving to prohibited IP addresses.
+     - Hardened HTTP session with `max_redirects = 0` and redirect-blocking hook aborting 3xx responses.
+  2. **Complete Secret & Endpoint Redaction**:
+     - Token suffix leakage eliminated: masked as `[token_hash={sha256(endpoint)[:8]}]`.
+     - Exception sanitization: provider error messages and URLs are scrubbed before writing to logs or database columns.
+  3. **Multi-Device Heartbeat Fencing**:
+     - Immediate pre-send heartbeat and lease revalidation before each individual device outbound call.
+     - Workers immediately halt upon lease loss without attempting remaining devices, preventing dual delivery.
+     - Incremental per-device delivery record commit preserving successful sends.
+  4. **Production VAPID & Desktop Compatibility**:
+     - `WebPushDispatcher.run_once()` validates production VAPID configuration early and fails closed before claiming tasks.
+     - Transparent fallback to ephemeral in-memory keypairs for desktop / Tauri development mode.
+- **Verification Gates Achieved**:
+  - 9 new M16.2 tests passed (`tests/test_m16_2_push_final_gate.py`).
+  - Combined push suite: 32 tests passed (100%).
+  - Full backend suite: 402 tests passed (100%).
+  - Full frontend suite: 34 tests passed (100%).
+  - MyPy and Ruff clean across 127 source files.
+  - Frontend production build verified in 5.25s.
 
 ---
 
