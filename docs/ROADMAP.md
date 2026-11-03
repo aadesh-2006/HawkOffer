@@ -14,9 +14,10 @@ flowchart LR
     M3 --> M4["M4: APScheduler & Multi-Attribute Filtering"]
     M4 --> M5["M5: Outbox, Keyset Reeval & Fair Drain Pipeline"]
     M5 --> M6["M6: Backend API & Application Runtime (Completed)"]
-    M6 --> M7["M7: React Dashboard UI & Tauri Shell"]
-    M7 --> M8["M8: Windows Packaging & Native Desktop System Tray"]
-    M8 --> M9["M9: Local AI Semantic Resume Matching"]
+    M6 --> M7["M7: React Dashboard UI & Tauri Shell (Completed)"]
+    M7 --> M8["M8: Desktop Runtime Integration & V1 Stabilization (Completed)"]
+    M8 --> M9["M9: Windows Packaging & Native Desktop System Tray"]
+    M9 --> M10["M10: Local AI Semantic Resume Matching"]
 ```
 
 ---
@@ -177,18 +178,35 @@ flowchart LR
 
 ---
 
-### Milestone 8: Windows Packaging, System Tray & Installer
-- **Focus**: Desktop shell packaging, system tray integration, and installer creation.
+### Milestone 8: Desktop Runtime Integration & V1 Stabilization (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Launch and operate HawkOffer as a coherent desktop application with managed backend lifecycle, readiness checks, graceful shutdown, single-instance enforcement, first-run onboarding, and end-to-end user workflow verification.
 - **Tasks**:
-  1. Set up Tauri project with Rust runtime wrapping the React frontend.
-  2. Configure system tray icon with "Open Dashboard", "Pause Monitoring", and "Quit" options.
-  3. Configure window behavior: minimize to system tray instead of exiting on close.
-  4. Bundle Python daemon using PyInstaller as a Tauri sidecar executable or managed background process.
-  5. Create automated GitHub Actions workflow to build Windows installer (`.msi` / `.exe`).
+  1. Implement Desktop Runtime Manager (`backend/app/desktop_runtime.py`):
+     - Single-instance PID lockfile management (`hawkoffer.pid` in application data directory).
+     - Cross-platform process liveness verification (Windows Win32 `OpenProcess`/`GetExitCodeProcess` and Unix `os.kill(pid, 0)`).
+     - Bounded readiness supervisor (`check_readiness()`, `wait_for_readiness()`) polling `/api/v1/health` with strict database connection checks.
+     - Stale PID lockfile detection and cleanup.
+     - Graceful process shutdown coordination via `SIGTERM` and bounded timeout fallback.
+     - CLI entry point: `python -m app.desktop_runtime start|stop|restart|status|readiness`.
+  2. Implement Frontend Startup & Readiness Gate:
+     - `BackendReadinessGate.tsx`: Splash overlay during initial boot verification and actionable recovery UI with copyable launch command if daemon is offline.
+     - `AppContext.tsx`: Reactive readiness state (`readinessState: "checking" | "ready" | "failed" | "skipped"`), timeout fallback, and offline mode continuation.
+  3. Implement First-Run Onboarding Experience:
+     - `FirstRunGuide.tsx`: Clean onboarding card presented when `companies_count === 0` guiding users through adding their first monitored company (with recommended Greenhouse/Lever board slugs), configuring deterministic preference criteria, and triggering their first scan.
+  4. Author Comprehensive 15-Step Automated Workflow Verification Suite:
+     - `backend/tests/test_desktop_workflow.py`: Exercises all 15 stages from clean SQLite initialization in a temp directory, health readiness, company registration, profile definition, immediate ATS scan, fingerprint deduplication, discovery worker execution, backlog drain promotion, notification retrieval, job detail inspection, mark as read, profile update with revision increment & historical reevaluation, clean shutdown, and fresh database instance persistence reload.
+  5. Conduct V1 Stabilization & Architecture Audit:
+     - Complete review of error handling, bounded retry limits, zero LLM dependencies, zero fake metrics, and memory lifecycle.
 - **Acceptance Criteria**:
-  - Application installs and launches on Windows without requiring manual Python installation.
-  - System tray icon operates correctly; daemon continues monitoring while window is closed.
-  - Memory consumption remains lightweight during background idle periods.
+  - All 15 steps in `test_desktop_workflow.py` pass automated in `pytest`.
+  - All 13 unit tests in `test_desktop_runtime.py` pass cleanly.
+  - All 33 frontend tests pass with Vitest.
+  - Static type checks (`mypy`) pass with zero errors across 85 backend source files.
+  - Linting (`ruff` and `tsc --noEmit`) passes with zero violations.
+  - Production frontend build (`vite build`) generates optimized bundle cleanly.
+  - Single-instance PID locking prevents duplicate backend daemon execution.
+
 
 ---
 
