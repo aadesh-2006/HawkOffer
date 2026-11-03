@@ -12,7 +12,7 @@
 ```mermaid
 flowchart LR
     M12["M12: SaaS Foundation & Architecture Audit<br/>(COMPLETED)"] --> M13["M13: Multi-Tenant Data Model & PostgreSQL<br/>(COMPLETED)"]
-    M13 --> M14["M14: User Auth & Tenant Isolation"]
+    M13 --> M14["M14: User Auth & Tenant Isolation<br/>(COMPLETED)"]
     M14 --> M15["M15: Centralized Monitoring & Fan-Out"]
     M15 --> M16["M16: Web Push Notifications (RFC 8291)"]
     M16 --> M17["M17: Public Web Dashboard & Application Tracking"]
@@ -52,24 +52,40 @@ flowchart LR
 ---
 
 ### Milestone 14: User Authentication, Security & Tenant Isolation
+*Status: COMPLETED (Verified across 347 backend tests & 34 frontend tests)*
 *Objective: Implement production-grade multi-user authentication, JWT session handling, and rigorous repository-level tenant boundaries.*
 
-- **Scope & Deliverables**:
-  1. **Authentication Engine**:
-     - Password hashing via `argon2-cffi` or `bcrypt`.
-     - JWT token issuance (access tokens + refresh tokens) with configurable expiration.
-     - Endpoints: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me`.
-  2. **Tenant Isolation Dependencies**:
-     - FastAPI dependency `get_current_user` and `get_current_active_user`.
-     - Scoped repositories: `ProfileRepository`, `NotificationRepository`, `SubscriptionRepository` strictly requiring `user_id`.
-     - Prohibit any endpoint from returning records belonging to another tenant.
-  3. **Role-Based Access Control (RBAC)**:
-     - Normal users can manage their own profiles, subscriptions, applications, and notifications.
-     - Admin users can manage curated companies and inspect central system monitoring telemetry.
-- **Verification Gates**:
-  - Multi-tenant security unit & integration test suite verifying User A cannot view, modify, or delete User B's resources (403/404 enforcement).
-  - Auth token lifecycle tests (expiration, invalid signature, revoked access).
-  - Zero SQL injection or un-scoped queries detected by static analysis.
+- **Delivered Capabilities**:
+  1. **Authentication Engine & Cryptography**:
+     - Password hashing via `argon2-cffi` (Argon2id, memory_cost=65536, time_cost=2, parallelism=1).
+     - Timing-safe dummy password verification mitigating user-enumeration attacks.
+     - Email normalization (whitespace trimmed, lowercased).
+     - Password complexity validation (minimum 8 chars, maximum 128, containing letters and digits/symbols).
+     - JWT token lifecycle via `PyJWT` (30m access token with `type: access`, 14d refresh token with `type: refresh` and unique UUID4 `jti`).
+     - Persistent token revocation and rotation in `refresh_tokens` database table.
+     - Endpoints: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`.
+  2. **FastAPI Auth Dependencies & Dual Compatibility**:
+     - `get_current_user`: Bearer JWT decoding, subject resolution, and active user verification.
+     - `get_current_active_user`: Enforces `is_active` status.
+     - `get_optional_user`: Supports unauthenticated desktop mode (`auth_required=False`) while strictly enforcing authenticated tenant isolation when tokens are provided or `auth_required=True`.
+     - `require_role(role)`: RBAC enforcement for admin capabilities.
+  3. **Strict Multi-Tenant Isolation**:
+     - Preference Profiles: Filtered by `user_id`. Attempting to access, modify, or delete another user's profile returns `404 Not Found`.
+     - Company Subscriptions: Filtered by `user_id`. Attempting to delete another user's subscription returns `404 Not Found`.
+     - Job Applications: Filtered by `user_id`. Attempting to access, update, or delete another user's application returns `404 Not Found`.
+     - Notifications: Scoped to `user_id`. Cross-user notification deduplication via `uq_notifications_job_user_type` index on `(job_id, user_id, notification_type)`. Multiple users can receive alerts for the same job, but a single user cannot receive duplicates.
+     - Companies: Curated companies require admin role to modify or delete. Custom companies can only be modified or deleted by their creator or an admin (403 Forbidden).
+  4. **Frontend API Groundwork**:
+     - Exported TypeScript contracts: `UserRead`, `UserRegisterRequest`, `UserLoginRequest`, `TokenResponse`, `ApplicationRead`, `ApplicationCreate`, `ApplicationUpdate`, `CompanySubscriptionRead`, `CompanySubscriptionCreate`.
+     - Added `authApi`, `applicationsApi`, and `subscriptionsApi` clients with automatic `Authorization: Bearer <token>` header injection.
+  5. **Alembic Migration & Schema Parity**:
+     - Migration `c4d5e6f7a8b9_m14_auth_and_security.py` creating `refresh_tokens` and adding `uq_notifications_job_user_type`. Verified clean upgrade, downgrade, and upgrade roundtrip.
+- **Verification Gates Achieved**:
+  - 347 backend pytest tests passed (including 11 comprehensive M14 security, auth, and tenant isolation tests).
+  - 34 frontend vitest tests passed.
+  - Zero Ruff linting issues (`ruff check app tests` passed).
+  - Zero MyPy typing errors (`mypy app tests` passed on 115 files).
+  - Production frontend build cleanly generated (`tsc && vite build`).
 
 ---
 

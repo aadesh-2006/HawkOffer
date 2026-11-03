@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.preference import PreferenceProfile
     from app.models.push import PushSubscription
     from app.models.subscription import UserCompanySubscription
+    from app.models.token import RefreshToken
 
 
 class User(Base, TimestampMixin):
@@ -47,6 +48,9 @@ class User(Base, TimestampMixin):
     )
     push_subscriptions: Mapped[list["PushSubscription"]] = relationship(
         "PushSubscription", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+    )
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
 
     __table_args__ = (

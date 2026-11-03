@@ -3,11 +3,10 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.deps import get_db, get_session_factory
-from app.models.preference import PreferenceProfile
+from app.api.deps import get_db, get_optional_user, get_session_factory
+from app.models.user import User
 from app.repositories.preference_repo import PreferenceProfileRepository
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.preference import (
@@ -32,8 +31,11 @@ router = APIRouter(prefix="/profiles", tags=["Preference Profiles"])
 async def create_profile(
     payload: PreferenceProfileCreate,
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PreferenceProfileRead:
-    """Create a new preference profile."""
+    """Create a new preference profile scoped to the current user."""
+    if current_user:
+        payload.user_id = current_user.id
     repo = PreferenceProfileRepository(session)
     profile = await repo.create(payload)
     return PreferenceProfileRead.model_validate(profile)
@@ -44,19 +46,19 @@ async def create_profile(
     response_model=PaginatedResponse[PreferenceProfileRead],
     status_code=status.HTTP_200_OK,
     summary="List preference profiles",
-    description="Returns a paginated list of preference profiles.",
+    description="Returns a paginated list of preference profiles for the authenticated user.",
 )
 async def list_profiles(
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PaginatedResponse[PreferenceProfileRead]:
     """List preference profiles with pagination."""
     repo = PreferenceProfileRepository(session)
-    items = await repo.list_all(skip=offset, limit=limit)
-    total = (
-        await session.execute(select(func.count()).select_from(PreferenceProfile))
-    ).scalar() or 0
+    user_id = current_user.id if current_user else None
+    items = await repo.list_by_user(user_id=user_id, skip=offset, limit=limit)
+    total = await repo.count_by_user(user_id=user_id)
 
     return PaginatedResponse[PreferenceProfileRead](
         items=[PreferenceProfileRead.model_validate(p) for p in items],
@@ -76,11 +78,14 @@ async def list_profiles(
 async def get_profile(
     profile_id: int,
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PreferenceProfileRead:
-    """Retrieve preference profile details by primary key."""
+    """Retrieve preference profile details by primary key with tenant ownership check."""
     repo = PreferenceProfileRepository(session)
     profile = await repo.get_by_id(profile_id)
-    if not profile:
+    if not profile or (
+        current_user and profile.user_id is not None and profile.user_id != current_user.id
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Preference profile with ID {profile_id} was not found",
@@ -110,8 +115,20 @@ async def update_profile(
     profile_id: int,
     payload: PreferenceProfileUpdate,
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PreferenceProfileRead:
-    """Update profile preferences through ProfileUpdateService to enforce M5 revision semantics."""
+    """Update profile preferences through ProfileUpdateService with tenant ownership check."""
+    async with session_factory() as session:
+        repo = PreferenceProfileRepository(session)
+        existing = await repo.get_by_id(profile_id)
+        if not existing or (
+            current_user and existing.user_id is not None and existing.user_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Preference profile with ID {profile_id} was not found",
+            )
+
     service = ProfileUpdateService(session_factory=session_factory)
     try:
         updated_profile, task = await service.update_profile(profile_id, payload)
@@ -149,9 +166,19 @@ async def update_profile(
 async def activate_profile(
     profile_id: int,
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PreferenceProfileRead:
-    """Activate a preference profile."""
+    """Activate a preference profile with tenant ownership check."""
     repo = PreferenceProfileRepository(session)
+    existing = await repo.get_by_id(profile_id)
+    if not existing or (
+        current_user and existing.user_id is not None and existing.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Preference profile with ID {profile_id} was not found",
+        )
+
     updated = await repo.update(profile_id, {"is_active": True})
     if not updated:
         raise HTTPException(
@@ -171,9 +198,19 @@ async def activate_profile(
 async def deactivate_profile(
     profile_id: int,
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> PreferenceProfileRead:
-    """Deactivate a preference profile."""
+    """Deactivate a preference profile with tenant ownership check."""
     repo = PreferenceProfileRepository(session)
+    existing = await repo.get_by_id(profile_id)
+    if not existing or (
+        current_user and existing.user_id is not None and existing.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Preference profile with ID {profile_id} was not found",
+        )
+
     updated = await repo.update(profile_id, {"is_active": False})
     if not updated:
         raise HTTPException(
@@ -193,9 +230,19 @@ async def deactivate_profile(
 async def delete_profile(
     profile_id: int,
     session: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
 ) -> MessageResponse:
-    """Delete a preference profile."""
+    """Delete a preference profile with tenant ownership check."""
     repo = PreferenceProfileRepository(session)
+    existing = await repo.get_by_id(profile_id)
+    if not existing or (
+        current_user and existing.user_id is not None and existing.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Preference profile with ID {profile_id} was not found",
+        )
+
     deleted = await repo.delete(profile_id)
     if not deleted:
         raise HTTPException(
@@ -203,3 +250,4 @@ async def delete_profile(
             detail=f"Preference profile with ID {profile_id} was not found",
         )
     return MessageResponse(message=f"Preference profile {profile_id} deleted successfully")
+

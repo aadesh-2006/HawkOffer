@@ -5,7 +5,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_orchestrator
+from app.api.deps import get_db, get_optional_user, get_orchestrator
+from app.models.company import Company
+from app.models.user import User
 from app.repositories.company_repo import CompanyRepository
 from app.repositories.scan_state_repo import ScanStateRepository
 from app.scheduler.orchestrator import MonitoringOrchestrator
@@ -16,6 +18,24 @@ from app.schemas.scan_state import ScanStateRead
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
+
+
+def _check_company_modify_permission(company: Company, user: User | None) -> None:
+    """Ensure user has permission to modify or delete a company target."""
+    if not user:
+        return
+    if user.role == "admin":
+        return
+    if company.is_curated:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot modify curated company without admin privileges",
+        )
+    if company.created_by_user_id is not None and company.created_by_user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to modify this company",
+        )
 
 
 @router.post(
@@ -29,8 +49,14 @@ async def create_company(
     payload: CompanyCreate,
     session: AsyncSession = Depends(get_db),
     orchestrator: MonitoringOrchestrator | None = Depends(get_orchestrator),
+    current_user: User | None = Depends(get_optional_user),
 ) -> CompanyRead:
     """Create a new company target and schedule it if active."""
+    if current_user:
+        payload.created_by_user_id = current_user.id
+        if current_user.role != "admin":
+            payload.is_curated = False
+
     company_repo = CompanyRepository(session)
     existing = await company_repo.get_by_career_url(payload.career_url)
     if existing:
@@ -119,6 +145,7 @@ async def update_company(
     payload: CompanyUpdate,
     session: AsyncSession = Depends(get_db),
     orchestrator: MonitoringOrchestrator | None = Depends(get_orchestrator),
+    current_user: User | None = Depends(get_optional_user),
 ) -> CompanyRead:
     """Update company settings and refresh scheduler configuration."""
     company_repo = CompanyRepository(session)
@@ -128,6 +155,8 @@ async def update_company(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Company with ID {company_id} was not found",
         )
+
+    _check_company_modify_permission(company, current_user)
 
     if payload.career_url and payload.career_url != company.career_url:
         existing = await company_repo.get_by_career_url(payload.career_url)
@@ -170,9 +199,19 @@ async def activate_company(
     company_id: int,
     session: AsyncSession = Depends(get_db),
     orchestrator: MonitoringOrchestrator | None = Depends(get_orchestrator),
+    current_user: User | None = Depends(get_optional_user),
 ) -> CompanyRead:
     """Activate company monitoring."""
     company_repo = CompanyRepository(session)
+    company = await company_repo.get_by_id(company_id)
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company with ID {company_id} was not found",
+        )
+
+    _check_company_modify_permission(company, current_user)
+
     updated = await company_repo.update(company_id, {"is_active": True})
     if not updated:
         raise HTTPException(
@@ -202,9 +241,19 @@ async def deactivate_company(
     company_id: int,
     session: AsyncSession = Depends(get_db),
     orchestrator: MonitoringOrchestrator | None = Depends(get_orchestrator),
+    current_user: User | None = Depends(get_optional_user),
 ) -> CompanyRead:
     """Deactivate company monitoring."""
     company_repo = CompanyRepository(session)
+    company = await company_repo.get_by_id(company_id)
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company with ID {company_id} was not found",
+        )
+
+    _check_company_modify_permission(company, current_user)
+
     updated = await company_repo.update(company_id, {"is_active": False})
     if not updated:
         raise HTTPException(
@@ -313,9 +362,19 @@ async def delete_company(
     company_id: int,
     session: AsyncSession = Depends(get_db),
     orchestrator: MonitoringOrchestrator | None = Depends(get_orchestrator),
+    current_user: User | None = Depends(get_optional_user),
 ) -> MessageResponse:
-    """Delete a company target."""
+    """Delete a company target with ownership and curation checks."""
     company_repo = CompanyRepository(session)
+    company = await company_repo.get_by_id(company_id)
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company with ID {company_id} was not found",
+        )
+
+    _check_company_modify_permission(company, current_user)
+
     deleted = await company_repo.delete(company_id)
     if not deleted:
         raise HTTPException(

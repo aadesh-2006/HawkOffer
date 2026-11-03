@@ -3,14 +3,20 @@
  */
 
 import {
+  ApplicationCreate,
+  ApplicationRead,
+  ApplicationUpdate,
   BatchActionResponse,
   CompanyCreate,
   CompanyRead,
+  CompanySubscriptionCreate,
+  CompanySubscriptionRead,
   CompanyUpdate,
   HealthResponse,
   JobFilterParams,
   JobMatchDetail,
   JobRead,
+  LogoutRequest,
   MessageResponse,
   ModelStatusInfo,
   MonitoringStatusResponse,
@@ -22,7 +28,12 @@ import {
   ScanStateRead,
   ScanTriggerResponse,
   SystemStatusResponse,
+  TokenRefreshRequest,
+  TokenResponse,
   UnreadCountResponse,
+  UserLoginRequest,
+  UserRead,
+  UserRegisterRequest,
   WorkerTriggerResponse,
 } from "../types/api";
 
@@ -58,6 +69,18 @@ export function setApiBaseUrl(url: string | null): void {
   }
 }
 
+export function getAuthToken(): string | null {
+  return localStorage.getItem("hawkoffer_access_token");
+}
+
+export function setAuthToken(token: string | null): void {
+  if (token && token.trim()) {
+    localStorage.setItem("hawkoffer_access_token", token.trim());
+  } else {
+    localStorage.removeItem("hawkoffer_access_token");
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getApiBaseUrl();
   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
@@ -66,6 +89,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     Accept: "application/json",
     ...(options.headers as Record<string, string>),
   };
+
+  const token = getAuthToken();
+  if (token && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
 
   if (options.body && typeof options.body === "string" && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
@@ -345,3 +373,89 @@ export const monitoringApi = {
       body: JSON.stringify(target),
     }),
 };
+
+// --------------------------------------------------------------------------
+// AUTHENTICATION & USER API
+// --------------------------------------------------------------------------
+
+export const authApi = {
+  register: (payload: UserRegisterRequest) =>
+    request<UserRead>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  login: (payload: UserLoginRequest) =>
+    request<TokenResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  refresh: (payload: TokenRefreshRequest) =>
+    request<TokenResponse>("/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  logout: (payload: LogoutRequest) =>
+    request<MessageResponse>("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  getMe: () => request<UserRead>("/auth/me"),
+};
+
+// --------------------------------------------------------------------------
+// APPLICATIONS API (TENANT-SCOPED)
+// --------------------------------------------------------------------------
+
+export const applicationsApi = {
+  list: (params?: { skip?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.skip !== undefined) qs.set("skip", String(params.skip));
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return request<ApplicationRead[]>(`/applications${query ? `?${query}` : ""}`);
+  },
+
+  create: (payload: ApplicationCreate) =>
+    request<ApplicationRead>("/applications", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  get: (applicationId: number) =>
+    request<ApplicationRead>(`/applications/${applicationId}`),
+
+  update: (applicationId: number, payload: ApplicationUpdate) =>
+    request<ApplicationRead>(`/applications/${applicationId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  delete: (applicationId: number) =>
+    request<MessageResponse>(`/applications/${applicationId}`, {
+      method: "DELETE",
+    }),
+};
+
+// --------------------------------------------------------------------------
+// COMPANY SUBSCRIPTIONS API (TENANT-SCOPED)
+// --------------------------------------------------------------------------
+
+export const subscriptionsApi = {
+  list: () => request<CompanySubscriptionRead[]>("/subscriptions"),
+
+  subscribe: (payload: CompanySubscriptionCreate) =>
+    request<CompanySubscriptionRead>("/subscriptions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  unsubscribe: (companyId: number) =>
+    request<MessageResponse>(`/subscriptions/${companyId}`, {
+      method: "DELETE",
+    }),
+};
+

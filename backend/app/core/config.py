@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     db_pool_recycle: int = 300
     db_pool_pre_ping: bool = True
 
+    # Security and Authentication settings
+    jwt_secret_key: str = "hawkoffer-dev-secret-key-change-in-production-min-32-chars"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 14
+    auth_required: bool = False
+
     # M5 Background Pipeline Scheduling
     discovery_interval_seconds: int = 30
     reevaluation_interval_seconds: int = 60

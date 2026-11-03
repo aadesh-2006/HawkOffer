@@ -280,3 +280,76 @@ export interface PauseResumeRequest {
   job_name?: string | null;
   company_id?: number | null;
 }
+
+export interface UserRead {
+  id: number;
+  email: string;
+  role: "user" | "admin" | string;
+  is_active: boolean;
+  is_verified: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserRegisterRequest {
+  email: string;
+  password: string;
+}
+
+export interface UserLoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface TokenRefreshRequest {
+  refresh_token: string;
+}
+
+export interface LogoutRequest {
+  refresh_token: string;
+}
+
+export type ApplicationStatus = "SAVED" | "APPLIED" | "INTERVIEWING" | "OFFER" | "REJECTED" | "WITHDRAWN";
+
+export interface ApplicationRead {
+  id: number;
+  user_id: number;
+  job_id: number;
+  status: ApplicationStatus | string;
+  notes: string | null;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplicationCreate {
+  job_id: number;
+  status?: ApplicationStatus | string;
+  notes?: string | null;
+  applied_at?: string | null;
+}
+
+export interface ApplicationUpdate {
+  status?: ApplicationStatus | string | null;
+  notes?: string | null;
+  applied_at?: string | null;
+}
+
+export interface CompanySubscriptionRead {
+  id: number;
+  user_id: number;
+  company_id: number;
+  created_at: string;
+}
+
+export interface CompanySubscriptionCreate {
+  company_id: number;
+}
+

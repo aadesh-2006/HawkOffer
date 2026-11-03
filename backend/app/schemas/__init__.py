@@ -6,6 +6,13 @@ from app.schemas.application import (
     ApplicationRead,
     ApplicationUpdate,
 )
+from app.schemas.auth import (
+    LogoutRequest,
+    TokenRefreshRequest,
+    TokenResponse,
+    UserLoginRequest,
+    UserRegisterRequest,
+)
 from app.schemas.common import (
     BatchActionRequest,
     BatchActionResponse,
@@ -91,6 +98,7 @@ __all__ = [
     "JobFilterParams",
     "JobRead",
     "JobUpdate",
+    "LogoutRequest",
     "MessageResponse",
     "MonitoringLogBase",
     "MonitoringLogCreate",
@@ -118,10 +126,14 @@ __all__ = [
     "SubscriptionCreate",
     "SubscriptionRead",
     "SystemStatusResponse",
+    "TokenRefreshRequest",
+    "TokenResponse",
     "UnreadCountResponse",
     "UserBase",
     "UserCreate",
+    "UserLoginRequest",
     "UserRead",
+    "UserRegisterRequest",
     "UserUpdate",
     "WorkerTriggerResponse",
 ]

@@ -1,11 +1,12 @@
-"""API router for Notification resources."""
+"""API router for Notification resources with tenant isolation."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_optional_user
+from app.models.user import User
 from app.repositories.notification_repo import NotificationRepository
 from app.schemas.common import (
     BatchActionRequest,
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"])
 @router.get("", response_model=PaginatedResponse[NotificationRead])
 async def list_notifications(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
     profile_id: Annotated[int | None, Query(description="Filter by preference profile ID")] = None,
     status_filter: Annotated[
         str | None, Query(alias="status", description="Filter by status (UNREAD, READ, DISMISSED)")
@@ -31,7 +33,8 @@ async def list_notifications(
     limit: Annotated[int, Query(description="Max items to return", ge=1, le=500)] = 50,
     offset: Annotated[int, Query(description="Pagination offset", ge=0)] = 0,
 ) -> PaginatedResponse[NotificationRead]:
-    """Retrieve paginated notifications with optional profile and status filtering."""
+    """Retrieve paginated notifications with tenant-scoped isolation."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
     items = await repo.list_notifications(
         profile_id=profile_id,
@@ -39,11 +42,13 @@ async def list_notifications(
         include_dismissed=include_dismissed,
         limit=limit,
         offset=offset,
+        user_id=user_id,
     )
     total = await repo.count_notifications(
         profile_id=profile_id,
         status=status_filter,
         include_dismissed=include_dismissed,
+        user_id=user_id,
     )
     return PaginatedResponse[NotificationRead](
         items=[NotificationRead.model_validate(item) for item in items],
@@ -56,11 +61,13 @@ async def list_notifications(
 @router.get("/unread-count", response_model=UnreadCountResponse)
 async def get_unread_count(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
     profile_id: Annotated[int | None, Query(description="Filter by profile ID")] = None,
 ) -> UnreadCountResponse:
-    """Get the current count of unread notifications."""
+    """Get the current count of unread notifications for the user."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    count = await repo.get_unread_count(profile_id=profile_id)
+    count = await repo.get_unread_count(profile_id=profile_id, user_id=user_id)
     return UnreadCountResponse(unread_count=count, profile_id=profile_id)
 
 
@@ -68,10 +75,12 @@ async def get_unread_count(
 async def batch_mark_read(
     payload: BatchActionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> BatchActionResponse:
-    """Mark multiple notifications as READ in a single operation."""
+    """Mark multiple notifications as READ in a single operation, scoped to user."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    count = await repo.mark_batch_read(payload.ids)
+    count = await repo.mark_batch_read(payload.ids, user_id=user_id)
     await db.commit()
     return BatchActionResponse(
         affected_count=count,
@@ -83,10 +92,12 @@ async def batch_mark_read(
 async def batch_dismiss(
     payload: BatchActionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> BatchActionResponse:
-    """Batch dismiss multiple notifications in a single operation."""
+    """Batch dismiss multiple notifications in a single operation, scoped to user."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    count = await repo.dismiss_batch(payload.ids)
+    count = await repo.dismiss_batch(payload.ids, user_id=user_id)
     await db.commit()
     return BatchActionResponse(
         affected_count=count,
@@ -98,10 +109,12 @@ async def batch_dismiss(
 async def get_notification(
     notification_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> NotificationRead:
-    """Retrieve full details of a notification by its ID."""
+    """Retrieve full details of a notification by its ID, enforcing tenant ownership."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    item = await repo.get_by_id(notification_id)
+    item = await repo.get_by_id_and_user(notification_id, user_id=user_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -114,10 +127,12 @@ async def get_notification(
 async def mark_notification_read(
     notification_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> NotificationRead:
-    """Mark a notification as READ."""
+    """Mark a notification as READ, enforcing tenant ownership."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    item = await repo.mark_as_read(notification_id)
+    item = await repo.mark_as_read(notification_id, user_id=user_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -131,10 +146,12 @@ async def mark_notification_read(
 async def mark_notification_unread(
     notification_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> NotificationRead:
-    """Mark a notification as UNREAD."""
+    """Mark a notification as UNREAD, enforcing tenant ownership."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    item = await repo.mark_as_unread(notification_id)
+    item = await repo.mark_as_unread(notification_id, user_id=user_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -148,10 +165,12 @@ async def mark_notification_unread(
 async def dismiss_notification(
     notification_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> NotificationRead:
-    """Dismiss a notification."""
+    """Dismiss a notification, enforcing tenant ownership."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    item = await repo.dismiss(notification_id)
+    item = await repo.dismiss(notification_id, user_id=user_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -165,10 +184,12 @@ async def dismiss_notification(
 async def restore_notification(
     notification_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_user)] = None,
 ) -> NotificationRead:
-    """Restore a dismissed notification to READ/UNREAD."""
+    """Restore a dismissed notification to READ/UNREAD, enforcing tenant ownership."""
+    user_id = current_user.id if current_user else None
     repo = NotificationRepository(db)
-    item = await repo.restore(notification_id)
+    item = await repo.restore(notification_id, user_id=user_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

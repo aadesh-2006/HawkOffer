@@ -19,6 +19,7 @@ from app.models.push import PushSubscription
 from app.models.scan_state import CompanyScanState
 from app.models.semantic import JobEmbedding
 from app.models.subscription import UserCompanySubscription
+from app.models.token import RefreshToken
 from app.models.user import User
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "ProfileReevaluationTask",
     "PushSubscription",
     "ReevaluationStatus",
+    "RefreshToken",
     "SystemDrainState",
     "User",
     "UserCompanySubscription",
