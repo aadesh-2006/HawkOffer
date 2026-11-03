@@ -58,8 +58,9 @@ jobs:
             exit 1
           fi
 
-          # Strip trailing slashes from base URL
+          # Strip trailing slashes and /api/v1 prefix if provided
           CLEAN_BASE_URL="${TARGET_BASE_URL%/}"
+          CLEAN_BASE_URL="${CLEAN_BASE_URL%/api/v1}"
           MONITOR_ENDPOINT="${CLEAN_BASE_URL}/api/v1/internal/cron/monitor"
 
           echo "[HawkOffer Cron] Initiating centralized monitoring trigger..."

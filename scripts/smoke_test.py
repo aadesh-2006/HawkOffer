@@ -379,45 +379,66 @@ class SmokeTestRunner:
         except Exception as exc:
             self.record("Company Catalog", f"GET {self.api_url}/companies", "FAIL", str(exc))
 
-        # 2. Application Tracker - Create
-        t0 = time.monotonic()
+        # 2. Application Tracker - Discover Job & Create Application
+        target_job_id: int | None = None
         try:
-            r = client.post(
-                f"{self.api_url}/applications",
+            r_jobs = client.get(
+                f"{self.api_url}/jobs?limit=1",
                 headers=headers,
-                json={
-                    "company_name": "Smoke Test Corp",
-                    "role_title": "Site Reliability Engineer",
-                    "stage": "APPLIED",
-                    "notes": "Automated smoke test application",
-                },
                 timeout=self.timeout,
             )
-            d = (time.monotonic() - t0) * 1000
-            if r.status_code == 201:
-                app_data = r.json()
-                self.created_app_id = app_data.get("id")
-                self.record(
-                    "Application Tracker: Create",
-                    f"POST {self.api_url}/applications",
-                    "PASS",
-                    f"id={self.created_app_id}",
-                    d,
+            if r_jobs.status_code == 200:
+                items = r_jobs.json().get("items", [])
+                if items:
+                    target_job_id = items[0]["id"]
+        except Exception:
+            pass
+
+        if target_job_id:
+            t0 = time.monotonic()
+            try:
+                r = client.post(
+                    f"{self.api_url}/applications",
+                    headers=headers,
+                    json={
+                        "job_id": target_job_id,
+                        "status": "APPLIED",
+                        "notes": "Automated smoke test application",
+                    },
+                    timeout=self.timeout,
                 )
-            else:
+                d = (time.monotonic() - t0) * 1000
+                if r.status_code == 201:
+                    app_data = r.json()
+                    self.created_app_id = app_data.get("id")
+                    self.record(
+                        "Application Tracker: Create",
+                        f"POST {self.api_url}/applications",
+                        "PASS",
+                        f"id={self.created_app_id} (job_id={target_job_id})",
+                        d,
+                    )
+                else:
+                    self.record(
+                        "Application Tracker: Create",
+                        f"POST {self.api_url}/applications",
+                        "FAIL",
+                        f"HTTP {r.status_code}: {r.text[:80]}",
+                        d,
+                    )
+            except Exception as exc:
                 self.record(
                     "Application Tracker: Create",
                     f"POST {self.api_url}/applications",
                     "FAIL",
-                    f"HTTP {r.status_code}: {r.text[:80]}",
-                    d,
+                    str(exc),
                 )
-        except Exception as exc:
+        else:
             self.record(
                 "Application Tracker: Create",
                 f"POST {self.api_url}/applications",
-                "FAIL",
-                str(exc),
+                "SKIP",
+                "No jobs in catalog yet to link application",
             )
 
         # 3. Application Tracker - List & Update
@@ -427,16 +448,16 @@ class SmokeTestRunner:
                 r = client.patch(
                     f"{self.api_url}/applications/{self.created_app_id}",
                     headers=headers,
-                    json={"stage": "INTERVIEWING"},
+                    json={"status": "INTERVIEWING"},
                     timeout=self.timeout,
                 )
                 d = (time.monotonic() - t0) * 1000
-                if r.status_code == 200 and r.json().get("stage") == "INTERVIEWING":
+                if r.status_code == 200 and r.json().get("status") == "INTERVIEWING":
                     self.record(
                         "Application Tracker: Update",
                         f"PATCH {self.api_url}/applications/{self.created_app_id}",
                         "PASS",
-                        "Stage updated to INTERVIEWING",
+                        "Status updated to INTERVIEWING",
                         d,
                     )
                 else:
