@@ -84,7 +84,7 @@ HawkOffer is being built incrementally, milestone by milestone:
   - [x] Phase 2: User-Facing Notification Delivery Lifecycle & Status Tracking
   - [x] Phase 3: Transactional Outbox, Keyset Reevaluation & Fair Backlog Drain Pipeline
 - [x] **Milestone 6: Backend API & Application Runtime Integration**
-- [ ] **Milestone 7: React Desktop Dashboard & Settings UI (Tauri Shell)**
+- [x] **Milestone 7: Desktop Application UI & Backend Integration (React + TypeScript + Vite + Tauri)**
 - [ ] **Milestone 8: Windows Packaging, System Tray & Native Installer**
 - [ ] **Milestone 9: AI-Powered Resume & Job Semantic Matching**
 
@@ -109,6 +109,26 @@ pytest --cov=app --cov-report=term-missing
 
 # Run end-to-end pipeline integration tests
 pytest tests/test_e2e_pipeline.py
+```
+
+### Running Frontend Tests & Dev Server
+HawkOffer's desktop UI runs on React 18, TypeScript, Vite, and Tailwind CSS with Tauri 2.x packaging:
+
+```bash
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start local development server (port 1420)
+npm run dev
+
+# Run Vitest test suite
+npm test
+
+# Typecheck and build production artifacts
+npm run lint
+npm run build
 ```
 
 ### Running Database Migrations

@@ -153,19 +153,27 @@ flowchart LR
 
 ---
 
-### Milestone 7: React + Vite + TypeScript Desktop Dashboard & Tauri Shell
-- **Focus**: Modern, responsive user interface for managing targets, viewing discovered jobs, and configuring preferences.
+### Milestone 7: React + Vite + TypeScript Desktop Dashboard & Tauri Shell (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Usable, polished local-first desktop application UI consuming the existing FastAPI REST backend.
 - **Tasks**:
-  1. Scaffold frontend project using React, Vite, TypeScript, and TailwindCSS / component library.
-  2. Build API service layer and data fetching hooks using TanStack Query.
-  3. Develop views:
-     - **Jobs Dashboard**: Card and table views of new and active jobs with quick search and filter chips.
-     - **Company Targets Manager**: Add and manage monitored companies with adapter status badges and manual "Run Now" actions.
-     - **Preferences Editor**: Tag inputs for positive/negative keywords, location inputs, remote toggles.
-     - **Run Logs & Diagnostics**: Scrape run history, duration, error messages, and success rates.
+  1. Scaffold frontend desktop UI using React 18, TypeScript, Vite 6, Tailwind CSS, Lucide icons, and Tauri 2.x configuration.
+  2. Implement centralized typed API client (`frontend/src/services/api.ts`) and global reactive state supervisor (`AppContext`).
+  3. Build reusable atomic UI components (`Badge`, `Button`, `Modal`, `EmptyState`, `LoadingSpinner`) with dark/light theme support.
+  4. Develop full application views:
+     - **Dashboard**: Real-time KPI statistics (`companies_count`, `total_jobs_count`, `unread_notifications_count`), background worker status monitors, quick manual trigger buttons, and recent job discoveries feed.
+     - **Jobs Feed**: Multi-attribute filter controls (company, status, job type, graduation year), debounced search, responsive paginated table, and job detail inspection modal.
+     - **Company Targets Manager**: CRUD interface for monitored companies, ATS platform badges, and on-demand scraping trigger with stats feedback.
+     - **Preference Profiles**: Multi-tag preference editors, match score thresholds, active state toggles, and historical reevaluation notice banner.
+     - **Notification Inbox**: Read/unread/dismissed tab filters, individual and batch operations, and unread count badges.
+     - **Monitoring Controls**: APScheduler runtime state, lifecycle gate indicators, worker run controls, and execution results inspector.
+     - **Settings & Connectivity**: Endpoint URL configuration, live health diagnostics, theme switcher, and daemon startup snippet.
+  5. Author comprehensive unit and integration test suite across API service and all screen components (29 tests passing with Vitest).
 - **Acceptance Criteria**:
-  - Frontend runs seamlessly and communicates with the local FastAPI backend.
-  - Users can add companies, adjust monitoring frequency, and see newly discovered jobs in real time.
+  - All 29 frontend Vitest tests pass cleanly.
+  - TypeScript compilation (`tsc --noEmit`) passes with zero errors.
+  - Production build (`vite build`) outputs optimized desktop web bundle.
+  - All 285 backend tests pass with zero regressions.
 
 ---
 
