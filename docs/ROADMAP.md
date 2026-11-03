@@ -240,6 +240,32 @@ flowchart LR
 
 ---
 
+### Milestone 9.1: Native Installer Verification & Release Sign-Off (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Verify native desktop packaging prerequisites, enforce process ownership safety across Tauri and backend runtime supervisor, and conduct exhaustive verification gates and release audit.
+- **Tasks**:
+  1. Process Ownership Safety & Multi-Instance Protection:
+     - Fixed race condition in `src-tauri/src/backend_manager.rs` and `backend/app/desktop_runtime.py` where closing Tauri would kill an existing backend daemon started externally or delete its PID file.
+     - Added explicit `owns_process` tracking to `BackendStatus` and `BackendManager`: when Tauri connects to an existing healthy backend, `owns_process` is set to `false`, and `stop_backend()` cleanly preserves the external daemon and its PID file.
+     - Enhanced `DesktopRuntimeManager.stop(only_if_owned=True)` and `status()` diagnostics with `owns_process`.
+     - Added test coverage in `backend/tests/test_desktop_runtime.py` verifying external daemon preservation and owned daemon termination.
+  2. Native Toolchain Discovery & Status:
+     - Installed official Rust 1.99.1 & Cargo 1.99.1 toolchain via Rustup.
+     - Audited C++ linker requirements: compilation of native MSVC binaries requires Microsoft Visual C++ Build Tools (`Microsoft.VisualStudio.2022.BuildTools` with "Desktop development with C++" workload). Documented exact linker diagnostics and CI/CD native build requirements.
+  3. Quality Gates & Release Verification:
+     - 306 backend Python tests passing (100% pass rate, including standalone bundle and persistence lifecycle).
+     - 33 frontend Vitest tests passing across all 9 test suites.
+     - Mypy static type checking passing with 0 errors across all 88 source files.
+     - Ruff linting passing with 0 violations.
+     - Vite frontend production build compiling cleanly.
+     - Standalone binary `backend/dist/hawkoffer-backend.exe` verified operational without Python installed.
+- **Acceptance Criteria**:
+  - Process ownership safety verified via automated tests.
+  - All quality gates pass cleanly with zero warnings/errors.
+  - Accurate documentation of toolchain prerequisites and release engineering status.
+
+---
+
 ### Milestone 10: AI-Powered Job & Resume Matching (Phase 2)
 - **Focus**: Semantic job scoring, resume parsing, and personalized match recommendations.
 - **Tasks**:

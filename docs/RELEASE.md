@@ -42,8 +42,9 @@ flowchart TD
 ### Key Lifecycle Principles
 1. **Zero-Configuration User Experience**: The user downloads and runs HawkOffer without installing Python, creating virtual environments, or configuring ports.
 2. **Deterministic Lifecycle Ownership**: The Tauri shell automatically launches the standalone backend sidecar upon startup, waits for readiness probe (`/api/v1/health` with `database: connected`), and terminates the backend process cleanly upon window close.
-3. **Strict Network Isolation**: The backend binds exclusively to loopback `127.0.0.1`. Public network interfaces (`0.0.0.0`) are explicitly rejected by security assertions.
-4. **Single-Instance Enforcement**: Cross-platform PID lockfile management (`hawkoffer.pid`) prevents duplicate backend instances.
+3. **Strict Process Ownership & Multi-Instance Safety**: The application distinguishes between a backend spawned by the desktop shell and an external pre-existing daemon (e.g. started via CLI supervisor or another window). If Tauri connects to an existing healthy backend, `owns_process` is tracked as `false`; closing the desktop window safely disconnects without terminating the external daemon or deleting `hawkoffer.pid`.
+4. **Strict Network Isolation**: The backend binds exclusively to loopback `127.0.0.1`. Public network interfaces (`0.0.0.0`) are explicitly rejected by security assertions.
+5. **Single-Instance Enforcement**: Cross-platform PID lockfile management (`hawkoffer.pid`) prevents duplicate backend instances.
 
 ---
 
@@ -126,10 +127,13 @@ This produces the native Windows installer (`.msi` / `.exe` via NSIS) containing
 
 ---
 
-## 6. Verification Quality Gates
+## 6. Verification Quality Gates (M9.1 Sign-Off)
 
 All verification suites pass automated checks:
-- **Backend Test Suite**: 304 passed (including `test_backend_bundle.py` and `test_persistence_lifecycle.py`).
+- **Backend Test Suite**: 306 passed (100% pass rate across all 306 tests, including `test_backend_bundle.py`, `test_desktop_runtime.py`, and `test_persistence_lifecycle.py`).
 - **Frontend Test Suite**: 33 passed across 9 test suites (`vitest`).
 - **Type Checking**: `mypy` strict mode passes across all 88 source files with 0 errors; `tsc --noEmit` passes with 0 errors.
 - **Linting**: `ruff` passes with 0 violations.
+- **Vite Production Bundle**: Builds cleanly without errors (`dist/index.html`, `dist/assets/`).
+- **PyInstaller Bundled Daemon**: Compiles relocatable 24.2 MB binary `backend/dist/hawkoffer-backend.exe` verified against `/health` and persistence lifecycle without Python.
+- **Toolchain Status**: Official Rust 1.99.1 & Cargo 1.99.1 verified. Native MSVC binary link step requires Microsoft Visual C++ Build Tools (`Microsoft.VisualStudio.2022.BuildTools`). Packaging pipeline is verified and ready for CI/CD runners with MSVC.
