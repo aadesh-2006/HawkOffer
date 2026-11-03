@@ -85,8 +85,9 @@ HawkOffer is being built incrementally, milestone by milestone:
   - [x] Phase 3: Transactional Outbox, Keyset Reevaluation & Fair Backlog Drain Pipeline
 - [x] **Milestone 6: Backend API & Application Runtime Integration**
 - [x] **Milestone 7: Desktop Application UI & Backend Integration (React + TypeScript + Vite + Tauri)**
-- [ ] **Milestone 8: Windows Packaging, System Tray & Native Installer**
-- [ ] **Milestone 9: AI-Powered Resume & Job Semantic Matching**
+- [x] **Milestone 8: Desktop Runtime Integration & V1 Stabilization**
+- [x] **Milestone 9: Native Packaging & Desktop Release Engineering**
+- [ ] **Milestone 10: AI-Powered Resume & Job Semantic Matching**
 
 For detailed task breakdowns and acceptance criteria, see [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -130,6 +131,15 @@ npm test
 npm run lint
 npm run build
 ```
+
+### Building Desktop Release Packages
+To compile the standalone backend binary and production frontend bundle into distribution artifacts:
+
+```bash
+# Automated release build pipeline
+.\backend\.venv\Scripts\python.exe scripts/build_release.py
+```
+This produces the standalone `hawkoffer-backend.exe` (~24 MB) and packages it for Tauri sidecar distribution. See [docs/RELEASE.md](docs/RELEASE.md) for full distribution instructions.
 
 ### Running Database Migrations
 Database schemas are managed with Alembic:

@@ -210,7 +210,37 @@ flowchart LR
 
 ---
 
-### Milestone 9: AI-Powered Job & Resume Matching (Phase 2)
+### Milestone 9: Native Packaging & Desktop Release Engineering (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Distribute HawkOffer as a genuine desktop application with a bundled standalone Python backend runtime, native Tauri process lifecycle integration, persistent data protection, and a reproducible release build pipeline.
+- **Tasks**:
+  1. Standalone Python Backend Executable Packaging:
+     - `backend/app/bundle_entry.py`: Frozen environment path resolution (`sys._MEIPASS`), automatic Alembic migration execution to `head`, table creation, strict `127.0.0.1` binding, single-instance PID locking, and signal trapping.
+     - `backend/hawkoffer-backend.spec`: Isolated PyInstaller single-file bundling containing FastAPI, Uvicorn, SQLAlchemy, aiosqlite, Alembic (including all migration versions and config), Pydantic, and APScheduler, while excluding development dependencies.
+     - `backend/scripts/build_backend.py`: Compiles `backend/dist/hawkoffer-backend.exe` (~24 MB) and deploys to `src-tauri/binaries/hawkoffer-backend-x86_64-pc-windows-msvc.exe`.
+  2. Native Tauri Desktop Process Lifecycle Integration:
+     - `src-tauri/src/backend_manager.rs`: Dedicated Rust backend supervisor that resolves binary paths, probes health readiness with bounded timeout, spawns backend on startup, and cleanly terminates processes on window close without orphaned processes.
+     - `src-tauri/src/main.rs`: Registers backend manager in Tauri managed state and exposes `get_backend_status`, `restart_backend`, and `get_data_directory` invoke handlers.
+     - `src-tauri/tauri.conf.json`: Configures `externalBin` sidecar and currentUser NSIS packaging.
+     - `src-tauri/capabilities/default.json`: Enforces strict least-privilege capability permissions.
+  3. Persistent Data, Upgrade, and Uninstall Safety:
+     - Verified `%LOCALAPPDATA%\HawkOffer\HawkOffer\hawkoffer.db` is stored outside the application installation directory.
+     - Application upgrades and reinstalls reconnect cleanly to existing SQLite tables, companies, preference profiles, and notification histories without data loss or split databases.
+  4. Reproducible Release Build Pipeline:
+     - `scripts/build_release.py`: Unified pipeline orchestrating frontend build (`npm run build`), PyInstaller compilation, sidecar deployment, SHA-256 checksum generation, and release manifest generation (`dist/release-manifest.json`).
+  5. Automated Verification Test Suites:
+     - `backend/tests/test_backend_bundle.py`: Tests compiled standalone binary execution, readiness probe, duplicate process avoidance, and graceful termination.
+     - `backend/tests/test_persistence_lifecycle.py`: Tests database survival, reconnection across updates, and idempotent migration execution.
+- **Acceptance Criteria**:
+  - Standalone executable runs on Windows without requiring a pre-installed Python runtime.
+  - All 304 backend tests pass with zero failures.
+  - All 33 frontend Vitest tests pass cleanly.
+  - Static type checks (`mypy` and `tsc --noEmit`) and linting (`ruff`) pass with zero violations.
+  - Distribution artifacts and release manifest are generated deterministically in `dist/`.
+
+---
+
+### Milestone 10: AI-Powered Job & Resume Matching (Phase 2)
 - **Focus**: Semantic job scoring, resume parsing, and personalized match recommendations.
 - **Tasks**:
   1. Implement `ResumeParser` to extract skills, experience level, and keywords from local PDF/DOCX resumes.
@@ -218,6 +248,9 @@ flowchart LR
   3. Calculate cosine similarity between job descriptions and resume profile.
   4. Display AI match score (0–100%) and key qualifications highlights in the desktop UI.
   5. Maintain zero cloud dependency (100% local inference).
+- **Acceptance Criteria**:
+  - Jobs are ranked by semantic relevance to the founder's resume.
+  - All processing runs locally with zero external API fees or data leakage.
 - **Acceptance Criteria**:
   - Jobs are ranked by semantic relevance to the founder's resume.
   - All processing runs locally with zero external API fees or data leakage.
