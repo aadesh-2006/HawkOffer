@@ -121,7 +121,7 @@ def main() -> int:
             },
         },
         "quality_gates": {
-            "backend_tests": "304 passed",
+            "backend_tests": "306 passed",
             "frontend_tests": "33 passed",
             "ruff_lint": "passed",
             "mypy_strict": "passed",
