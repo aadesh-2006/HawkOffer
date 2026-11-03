@@ -163,6 +163,7 @@ class JobFilteringEngine:
         job: Any,
         profile: Any,
         embedding_service: Any = None,
+        job_embedding: list[float] | None = None,
     ) -> EvaluationResult:
         """Evaluate a Job against a PreferenceProfile deterministically and explainably."""
         job_data = self._extract_job_data(job)
@@ -747,7 +748,9 @@ class JobFilteringEngine:
 
                 if prof_text and job_text:
                     prof_vec = emb_svc.embed_text(prof_text)
-                    job_vec = emb_svc.embed_text(job_text)
+                    job_vec = (
+                        job_embedding if job_embedding is not None else emb_svc.embed_text(job_text)
+                    )
 
                     semantic_res = SemanticJobMatcher.evaluate_match(
                         job_embedding=job_vec,

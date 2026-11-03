@@ -168,8 +168,8 @@ class OnnxEmbeddingService(BaseEmbeddingService):
             )
 
             self._tokenizer = Tokenizer.from_file(str(self.tokenizer_path))
-            self._tokenizer.enable_truncation(max_length=256)
-            self._tokenizer.enable_padding(length=256)
+            self._tokenizer.enable_truncation(max_length=512)
+            self._tokenizer.enable_padding()
 
             logger.info("Loaded ONNX embedding engine from %s", self.model_path)
         except Exception as exc:
@@ -189,11 +189,16 @@ class OnnxEmbeddingService(BaseEmbeddingService):
         if not texts:
             return []
 
-        # Sanitize texts (replace None or empty with single whitespace)
-        clean_texts = [t if (t and t.strip()) else " " for t in texts]
+        # Identify indices of non-empty texts to infer
+        non_empty_indices = [i for i, t in enumerate(texts) if t and t.strip()]
+        if not non_empty_indices:
+            return [[0.0] * self._dimension for _ in texts]
 
-        # 1. Tokenize batch
-        encoded = self._tokenizer.encode_batch(clean_texts)
+        # Extract only non-empty texts for tokenizer and inference
+        active_texts = [texts[i] for i in non_empty_indices]
+
+        # 1. Tokenize batch dynamically (pads to batch max sequence length <= 512)
+        encoded = self._tokenizer.encode_batch(active_texts)
         input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
         attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
         token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
@@ -223,5 +228,11 @@ class OnnxEmbeddingService(BaseEmbeddingService):
         norms = np.linalg.norm(pooled, axis=1, keepdims=True)
         norms = np.clip(norms, a_min=1e-12, a_max=None)
         normalized = pooled / norms
+        computed_vectors: list[list[float]] = normalized.astype(float).tolist()
 
-        return normalized.astype(float).tolist()  # type: ignore[no-any-return]
+        # Reconstruct output array mapping computed vectors to non-empty positions
+        final_vectors: list[list[float]] = [[0.0] * self._dimension for _ in texts]
+        for original_idx, computed_vec in zip(non_empty_indices, computed_vectors, strict=False):
+            final_vectors[original_idx] = computed_vec
+
+        return final_vectors

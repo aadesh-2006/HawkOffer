@@ -9,9 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.filtering.engine import JobFilteringEngine
 from app.models.preference import PreferenceProfile
+from app.repositories.embedding_repo import EmbeddingRepository
 from app.repositories.job_repo import JobRepository
 from app.schemas.common import PaginatedResponse
 from app.schemas.job import JobFilterParams, JobMatchDetail, JobRead
+from app.services.semantic.matcher import SemanticJobMatcher
+from app.services.semantic.model_manager import SemanticModelManager
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -65,13 +68,27 @@ async def list_jobs(
         profile = prof_res.scalar_one_or_none()
 
     engine = JobFilteringEngine()
+    emb_repo = EmbeddingRepository(db)
+    emb_svc = SemanticModelManager.get_instance().get_embedding_service()
     job_reads: list[JobRead] = []
 
     for item in items:
         job_read = JobRead.model_validate(item)
         if profile and getattr(profile, "semantic_enabled", True):
             try:
-                eval_res = engine.evaluate(item, profile)
+                job_text, _ = SemanticJobMatcher.build_job_text(item)
+                job_vec = await emb_repo.get_or_compute_job_embedding(
+                    job_id=item.id,
+                    content_hash=item.content_hash,
+                    job_text=job_text,
+                    embedding_service=emb_svc,
+                )
+                eval_res = engine.evaluate(
+                    item,
+                    profile,
+                    embedding_service=emb_svc,
+                    job_embedding=job_vec,
+                )
                 if eval_res.semantic_match:
                     job_read.semantic_score = eval_res.semantic_match.similarity_score
                     job_read.match_tier = eval_res.semantic_match.relevance_tier
@@ -80,6 +97,7 @@ async def list_jobs(
             except Exception:
                 pass
         job_reads.append(job_read)
+    await db.commit()
 
     return PaginatedResponse[JobRead](
         items=job_reads,
@@ -138,8 +156,25 @@ async def get_job_match_detail(
             detail="No active preference profile found to match against",
         )
 
+    # Use cached embedding or compute and persist
+    emb_repo = EmbeddingRepository(db)
+    emb_svc = SemanticModelManager.get_instance().get_embedding_service()
+    job_text, _ = SemanticJobMatcher.build_job_text(job)
+    job_vec = await emb_repo.get_or_compute_job_embedding(
+        job_id=job.id,
+        content_hash=job.content_hash,
+        job_text=job_text,
+        embedding_service=emb_svc,
+    )
+    await db.commit()
+
     engine = JobFilteringEngine()
-    eval_res = engine.evaluate(job, profile)
+    eval_res = engine.evaluate(
+        job,
+        profile,
+        embedding_service=emb_svc,
+        job_embedding=job_vec,
+    )
 
     # Collect human-readable explainability reasons
     reasons: list[str] = [r.message for r in eval_res.matched_criteria]

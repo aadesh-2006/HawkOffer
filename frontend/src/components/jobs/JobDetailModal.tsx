@@ -229,14 +229,18 @@ export const JobDetailModal: React.FC = () => {
                         ? "bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border-teal-300"
                         : matchDetail.relevance_tier === "MEDIUM"
                         ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border-amber-300"
+                        : matchDetail.relevance_tier === "INELIGIBLE"
+                        ? "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300 border-rose-300"
                         : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-300"
                     }`}
                   >
-                    {matchDetail.relevance_tier} MATCH
+                    {matchDetail.relevance_tier === "INELIGIBLE"
+                      ? "INELIGIBLE"
+                      : `${matchDetail.relevance_tier} MATCH`}
                   </span>
                   <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
                     {matchDetail.semantic_score != null
-                      ? `${Math.round(matchDetail.semantic_score * 100)}% Similarity`
+                      ? `${Math.round(matchDetail.semantic_score)}% Similarity`
                       : "Semantic Matching Inactive"}
                   </span>
                 </div>
@@ -250,7 +254,7 @@ export const JobDetailModal: React.FC = () => {
                     style={{
                       width: `${Math.min(
                         100,
-                        Math.max(0, (matchDetail.semantic_score ?? 0) * 100)
+                        Math.max(0, matchDetail.semantic_score ?? 0)
                       )}%`,
                     }}
                   />

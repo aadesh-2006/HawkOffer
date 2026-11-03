@@ -323,6 +323,42 @@ flowchart LR
 
 ---
 
+### Milestone 10.1: Semantic Matching Quality & Release Audit (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Semantic model lifecycle robustness, ONNX inference correctness, verified 200 OK asset URLs, corrupted file auto-recovery, cache wiring, sidecar binary synchronization, and release sign-off.
+- **Tasks**:
+  1. Semantic Model Lifecycle & Asset Integrity Audit:
+     - Fixed broken Hugging Face model URL (resolved 404 on `all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx` by pointing to verified 22.9MB Xenova quantized weights with secondary fallback to unquantized ONNX).
+     - Implemented corrupted model detection & auto-recovery (`MIN_MODEL_SIZE_BYTES = 15MB`, `MIN_TOKENIZER_SIZE_BYTES = 100KB`): zero-byte or truncated files are automatically quarantined, unlinked, and safely reverted to fallback mode without crashes.
+     - Added atomic download promotion: downloads stream to `.tmp` files and perform a test inference pass before atomically replacing target assets.
+     - Resolved concurrent download contention: non-blocking lock check avoids stalling multiple API callers during background downloads.
+  2. ONNX Inference & Tokenization Correctness:
+     - Enabled tokenizer truncation to model maximum sequence length (512 tokens).
+     - Enabled dynamic padding to batch max length, optimizing CPU cycles.
+     - Sanitized empty and whitespace-only text inputs to zero vectors without running spurious inference.
+  3. Authoritative Hard-Filter Precedence & Blended Scoring:
+     - Standardized relevance tier classifications (`EXCELLENT`, `HIGH`, `MEDIUM`, `LOW`, `INELIGIBLE`).
+     - Enforced strict `0.0` blended score and `INELIGIBLE` relevance tier for any posting violating deterministic constraints (location, excluded keywords, graduation year).
+     - Fixed frontend percentage display scaling bug (`8500%` -> `85%`).
+  4. Embedding Persistence & Cache Wiring:
+     - Implemented `EmbeddingRepository.get_or_compute_job_embedding` caching logic in `GET /api/v1/jobs` and `GET /api/v1/jobs/{job_id}/match`.
+     - Verified content-hash-based cache reuse and cache invalidation upon job content updates.
+  5. Standalone Desktop Sidecar Packaging & Verification:
+     - Recompiled standalone Python backend executable (`hawkoffer-backend.exe`, 54.2 MB) via PyInstaller with `onnxruntime`, `tokenizers`, and `numpy`.
+     - Deployed updated binary to `src-tauri/binaries/hawkoffer-backend-x86_64-pc-windows-msvc.exe`.
+     - Validated standalone binary status commands and full process lifecycle (`test_backend_bundle.py`).
+  6. Automated Quality Gates:
+     - All 320 backend tests pass (100% pass rate in `pytest`).
+     - All 34 frontend Vitest tests pass cleanly.
+     - Static analysis (`mypy` across 97 source files and `tsc --noEmit`) passes with 0 errors.
+     - Code formatting and linting (`ruff`) pass with 0 violations.
+- **Acceptance Criteria**:
+  - Model download and recovery handle network/disk corruption gracefully.
+  - Hard filters remain inviolable under all circumstances.
+  - Standalone executable bundles semantic runtime without runtime dependency failures.
+
+---
+
 ## Engineering Guidelines & Rules
 
 1. **Step-by-Step Approval**: Do not advance to subsequent milestones without explicit review and approval of the current milestone's deliverables.

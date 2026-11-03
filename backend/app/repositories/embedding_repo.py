@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.base import utc_now
 from app.models.semantic import JobEmbedding
+from app.services.semantic.embedding_service import BaseEmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -67,3 +68,26 @@ class EmbeddingRepository:
         stmt = delete(JobEmbedding).where(JobEmbedding.job_id == job_id)
         res = await self.session.execute(stmt)
         return int(getattr(res, "rowcount", 0) or 0)
+
+    async def get_or_compute_job_embedding(
+        self,
+        job_id: int,
+        content_hash: str,
+        job_text: str,
+        embedding_service: BaseEmbeddingService,
+    ) -> list[float]:
+        """Fetch cached embedding if content_hash matches, otherwise compute and upsert."""
+        model_version = embedding_service.model_version
+        cached = await self.get_by_job_and_version(job_id, model_version)
+        if cached is not None and cached.content_hash == content_hash:
+            return cached.to_vector()
+
+        # Compute fresh embedding and cache it
+        vec = embedding_service.embed_text(job_text)
+        await self.save_embedding(
+            job_id=job_id,
+            model_version=model_version,
+            content_hash=content_hash,
+            embedding=vec,
+        )
+        return vec

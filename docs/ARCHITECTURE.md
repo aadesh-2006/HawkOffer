@@ -873,4 +873,25 @@ Every match provides full transparency:
 - **Missing Requirements**: Highlighted skills required by the employer that were not identified in the profile.
 - **Sparse Description Detection**: Flags descriptions under 40 characters with adjusted confidence notes.
 
+### 12.5 Integrity & Lifecycle Hardening (Milestone 10.1 Audit)
+- **Asset Integrity Checks**:
+  - `MIN_MODEL_SIZE_BYTES` (15 MB) and `MIN_TOKENIZER_SIZE_BYTES` (100 KB) enforce minimum physical file sizes.
+  - Zero-byte or truncated assets left by interrupted downloads or disk corruption are detected during startup inspection, automatically unlinked, and transitioned to `NOT_DOWNLOADED` with seamless fallback activation.
+- **Atomic Two-Phase Promotion**:
+  - Downloads stream to staging files (`model.onnx.tmp`, `tokenizer.json.tmp`).
+  - Prior to replacing active model files, an end-to-end test inference pass is executed against the temporary files. Only upon producing a valid 384-dimensional vector are the files atomically promoted via file system rename.
+- **Inference Optimization & Text Sanitization**:
+  - Max token length capped at 512 with dynamic padding to batch max length, reducing unnecessary matrix operations on short job titles.
+  - Empty or whitespace strings are routed to static zero vectors `[0.0] * 384` without invoking tokenizer or tensor runtime.
+- **Asset Endpoints**:
+  - Primary quantized model asset: `https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx` (22.9 MB INT8).
+  - Secondary fallback asset: `https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx` (90.4 MB FP32).
+
+### 12.6 Scoring Limitations and Fallback Trade-offs
+- **Lexical Subword Baseline in Fallback Mode**:
+  - The deterministic fallback service hashes character 3-grams and word tokens into 384 dimensions. Due to shared English subwords (e.g., "-ing", "-tion", "-er"), completely unrelated career descriptions yield a baseline lexical similarity of ~20–28%.
+  - Relevant roles achieve 45–65% similarity in fallback mode, preserving monotonic rank ordering while waiting for neural weights.
+- **Authoritative Hard Filter Overrides**:
+  - If a job violates hard filter rules (location mismatch, excluded keywords, graduation year bounds), its `blended_score` is forced to `0.0` and its `relevance_tier` is locked to `"INELIGIBLE"`. Semantic similarity is strictly secondary to candidate eligibility.
+
 

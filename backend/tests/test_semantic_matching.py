@@ -81,7 +81,7 @@ def test_semantic_matcher_explainability_and_tiers() -> None:
 
     assert match_result.similarity_score > 20.0
     assert match_result.blended_score > 50.0
-    assert match_result.relevance_tier in ("Strong Match", "Moderate Match", "Low Match")
+    assert match_result.relevance_tier in ("EXCELLENT", "HIGH", "MEDIUM", "LOW")
     assert "Python" in match_result.shared_skills
     assert "TypeScript" in match_result.shared_skills
     assert match_result.is_sparse_description is False

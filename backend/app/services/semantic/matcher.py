@@ -120,13 +120,19 @@ class SemanticJobMatcher:
         return shared, missing
 
     @staticmethod
-    def determine_relevance_tier(similarity_score: float) -> str:
+    def determine_relevance_tier(
+        similarity_score: float, status: EligibilityStatus | None = None
+    ) -> str:
         """Categorize similarity score into human-readable relevance tier."""
+        if status == EligibilityStatus.INELIGIBLE:
+            return "INELIGIBLE"
         if similarity_score >= 70.0:
-            return "Strong Match"
-        if similarity_score >= 45.0:
-            return "Moderate Match"
-        return "Low Match"
+            return "EXCELLENT"
+        if similarity_score >= 50.0:
+            return "HIGH"
+        if similarity_score >= 35.0:
+            return "MEDIUM"
+        return "LOW"
 
     @classmethod
     def evaluate_match(
@@ -149,15 +155,16 @@ class SemanticJobMatcher:
         # its blended score must NOT override ineligibility!
         # ---------------------------------------------------------------------
         if deterministic_status == EligibilityStatus.INELIGIBLE:
-            blended = deterministic_score  # Retain low / zero score
+            blended = 0.0  # Ineligible postings receive 0.0 ranking score
+            tier = "INELIGIBLE"
         else:
             # For ELIGIBLE and NEEDS_REVIEW jobs:
             # 55% deterministic criteria score + 45% semantic similarity score
             blended = (0.55 * deterministic_score) + (0.45 * similarity)
             blended = round(max(0.0, min(100.0, blended)), 1)
+            tier = cls.determine_relevance_tier(similarity, deterministic_status)
 
         shared, missing = cls.extract_skills_analysis(preferred_skills, job_text)
-        tier = cls.determine_relevance_tier(similarity)
 
         return SemanticMatchResult(
             similarity_score=round(similarity, 1),
