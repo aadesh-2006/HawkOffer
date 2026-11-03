@@ -1,0 +1,67 @@
+# ==============================================================================
+# HawkOffer Production Docker Compose (Self-Hosted / VPS Evaluation)
+# ==============================================================================
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Ensure you copy .env.example to .env and configure strong secrets before running.
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: hawkoffer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hawkoffer}
+      POSTGRES_USER: ${POSTGRES_USER:-hawkoffer_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hawkoffer_user} -d ${POSTGRES_DB:-hawkoffer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      # Expose only on loopback interface for local host inspection/backups
+      - "127.0.0.1:5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hawkoffer-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HAWKOFFER_ENV: production
+      HAWKOFFER_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hawkoffer_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-hawkoffer}
+      HAWKOFFER_API_HOST: 0.0.0.0
+      HAWKOFFER_API_PORT: 8000
+      HAWKOFFER_AUTH_REQUIRED: "true"
+      HAWKOFFER_JWT_SECRET_KEY: ${HAWKOFFER_JWT_SECRET_KEY:?JWT secret key must be set in .env}
+      HAWKOFFER_CRON_SECRET: ${HAWKOFFER_CRON_SECRET:?Cron secret must be set in .env}
+      HAWKOFFER_VAPID_PUBLIC_KEY: ${HAWKOFFER_VAPID_PUBLIC_KEY:-}
+      HAWKOFFER_VAPID_PRIVATE_KEY: ${HAWKOFFER_VAPID_PRIVATE_KEY:-}
+      HAWKOFFER_VAPID_CLAIMS_SUB: ${HAWKOFFER_VAPID_CLAIMS_SUB:-mailto:admin@hawkoffer.app}
+      HAWKOFFER_CORS_ORIGINS: ${HAWKOFFER_CORS_ORIGINS:-http://localhost:5173,http://localhost:1420}
+      HAWKOFFER_START_INTERNAL_SCHEDULER: ${HAWKOFFER_START_INTERNAL_SCHEDULER:-true}
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  postgres_data:
+    driver: local

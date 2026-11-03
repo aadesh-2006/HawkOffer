@@ -58,10 +58,12 @@ export class ApiClientError extends Error {
 
 export function getApiBaseUrl(): string {
   const custom = localStorage.getItem("hawkoffer_api_url");
-  if (custom && custom.trim()) {
-    return custom.trim().replace(/\/+$/, "");
+  let url = (custom && custom.trim()) || import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+  url = url.trim().replace(/\/+$/, "");
+  if (!url.endsWith("/api/v1")) {
+    url = `${url}/api/v1`;
   }
-  return import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+  return url;
 }
 
 export function setApiBaseUrl(url: string | null): void {
@@ -128,7 +130,7 @@ async function request<T>(path: string, options: RequestInit = {}, isRetry = fal
   } catch (err) {
     throw new ApiClientError(
       0,
-      `Cannot connect to HawkOffer backend at ${baseUrl}. Ensure daemon is running on 127.0.0.1:8765.`,
+      `Cannot connect to HawkOffer backend at ${baseUrl}. Ensure backend service is running and reachable.`,
       err
     );
   }

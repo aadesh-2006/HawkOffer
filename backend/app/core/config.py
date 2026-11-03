@@ -1,8 +1,10 @@
 """Application configuration module for HawkOffer."""
 
 from pathlib import Path
+from typing import Any
 
 from platformdirs import user_data_dir
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 KNOWN_INSECURE_CRON_SECRETS: frozenset[str] = frozenset({
@@ -34,6 +36,7 @@ class Settings(BaseSettings):
     # API configuration
     api_host: str = "127.0.0.1"
     api_port: int = 8765
+    cors_origins: list[str] = []
 
     # Storage and directory configuration (Cross-platform)
     data_dir: Path | None = None
@@ -53,6 +56,23 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 14
     auth_required: bool = False
     cron_secret: str | None = None
+
+    # M18 Cloud Deployment & Scheduling controls
+    start_internal_scheduler: bool = True
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> list[str]:
+        """Parse comma-separated strings or string lists into normalized origin URLs."""
+        if isinstance(v, str):
+            return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
+        if isinstance(v, list):
+            return [str(o).strip().rstrip("/") for o in v if str(o).strip()]
+        return []
+
+    def get_cors_origins(self) -> list[str]:
+        """Return list of configured external CORS origins."""
+        return list(self.cors_origins)
 
     # M15 & M15.1 Multi-Tenant Centralized Monitoring
     monitor_curated_without_subscribers: bool = False

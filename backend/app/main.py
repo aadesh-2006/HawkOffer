@@ -26,8 +26,8 @@ from app.scheduler.orchestrator import MonitoringOrchestrator
 
 logger = logging.getLogger("hawkoffer")
 
-# Restrict CORS origins strictly to Tauri and local Vite frontend environments
-CORS_ALLOWED_ORIGINS: list[str] = [
+# Default CORS origins for desktop Tauri and local Vite frontend environments
+DEFAULT_CORS_ORIGINS: list[str] = [
     "http://127.0.0.1:1420",
     "http://localhost:1420",
     "http://127.0.0.1:5173",
@@ -44,6 +44,7 @@ def create_app(
 ) -> FastAPI:
     """FastAPI application factory with configurable runtime lifecycle dependencies."""
     effective_session_factory = session_factory or default_session_factory
+    effective_start_scheduler = start_scheduler and settings.start_internal_scheduler
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -58,8 +59,8 @@ def create_app(
                 logger.error("Failed to initialize database during startup: %s", exc)
                 raise
 
-        # 2. Start scheduler orchestrator if requested
-        if start_scheduler:
+        # 2. Start scheduler orchestrator if requested and enabled
+        if effective_start_scheduler:
             if app.state.orchestrator is None:
                 app.state.orchestrator = MonitoringOrchestrator(
                     session_factory=app.state.session_factory
@@ -71,6 +72,8 @@ def create_app(
             except Exception as exc:
                 logger.error("Failed to start MonitoringOrchestrator: %s", exc)
                 raise
+        else:
+            logger.info("Internal scheduler disabled by configuration or parameter")
 
         yield
 
@@ -94,17 +97,18 @@ def create_app(
 
     app = FastAPI(
         title="HawkOffer API",
-        description="Local desktop job monitoring, ingestion, filtering, and alert pipeline.",
+        description="Website-first multi-user SaaS job monitoring and alert pipeline.",
         version="0.1.0",
         lifespan=lifespan,
     )
     app.state.session_factory = effective_session_factory
     app.state.orchestrator = orchestrator
 
-    # Attach CORS middleware with narrow desktop app origins
+    # Attach CORS middleware with merged origins (desktop Tauri + local Vite + production origins)
+    allowed_origins = sorted(set(DEFAULT_CORS_ORIGINS + settings.get_cors_origins()))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ALLOWED_ORIGINS,
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

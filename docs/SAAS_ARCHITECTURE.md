@@ -409,6 +409,8 @@ flowchart TD
 3. **User Perceived Latency**:
    - The web app displays a friendly loading state during cold starts (`"Waking up cloud engine..."`) using the existing `BackendReadinessGate` component.
    - Once awake, subsequent navigation and filtering take < 80ms.
+4. **Implementation & Operational Manual**:
+   - Full setup walkthroughs, environment variables, backup/restore playbooks, and provider configuration are documented in [docs/DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
