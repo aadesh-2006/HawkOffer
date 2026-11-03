@@ -33,11 +33,14 @@ pub struct BackendStatus {
     pub port: u16,
     pub message: String,
     pub data_dir: String,
+    pub owns_process: bool,
 }
 
 pub struct BackendManager {
     child_process: Arc<Mutex<Option<Child>>>,
     is_shutting_down: Arc<AtomicBool>,
+    owns_process: Arc<AtomicBool>,
+    spawned_pid: Arc<Mutex<Option<u32>>>,
 }
 
 impl Default for BackendManager {
@@ -51,6 +54,8 @@ impl BackendManager {
         Self {
             child_process: Arc::new(Mutex::new(None)),
             is_shutting_down: Arc::new(AtomicBool::new(false)),
+            owns_process: Arc::new(AtomicBool::new(false)),
+            spawned_pid: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -195,6 +200,7 @@ impl BackendManager {
 
         // 1. If backend is already running and healthy, reuse existing instance
         if Self::probe_readiness(Duration::from_millis(600)) {
+            self.owns_process.store(false, Ordering::SeqCst);
             let pid = Self::read_pid_file();
             return Ok(BackendStatus {
                 is_running: true,
@@ -204,6 +210,7 @@ impl BackendManager {
                 port: BACKEND_PORT,
                 message: "Existing backend instance verified and healthy".to_string(),
                 data_dir: Self::resolve_data_dir().to_string_lossy().to_string(),
+                owns_process: false,
             });
         }
 
@@ -252,6 +259,11 @@ impl BackendManager {
             let mut lock = self.child_process.lock().map_err(|e| e.to_string())?;
             *lock = Some(child);
         }
+        self.owns_process.store(true, Ordering::SeqCst);
+        {
+            let mut pid_lock = self.spawned_pid.lock().map_err(|e| e.to_string())?;
+            *pid_lock = Some(pid);
+        }
 
         // 5. Bounded readiness wait loop
         let start_time = Instant::now();
@@ -270,6 +282,7 @@ impl BackendManager {
                         start_time.elapsed().as_secs_f32()
                     ),
                     data_dir: data_dir.to_string_lossy().to_string(),
+                    owns_process: true,
                 });
             }
             thread::sleep(Duration::from_millis(300));
@@ -284,6 +297,13 @@ impl BackendManager {
     /// Stop the backend daemon gracefully.
     pub fn stop_backend(&self) -> Result<(), String> {
         self.is_shutting_down.store(true, Ordering::SeqCst);
+
+        // If we do not own the backend process (e.g. Tauri attached to an existing
+        // backend daemon started externally), we must NOT terminate the external
+        // process or delete its pidfile on application exit.
+        if !self.owns_process.load(Ordering::SeqCst) {
+            return Ok(());
+        }
 
         // 1. Stop managed child if we spawned it
         let mut child_opt = {
@@ -332,30 +352,17 @@ impl BackendManager {
             if !exited {
                 let _ = child.kill();
             }
-        } else if let Some(pid) = Self::read_pid_file() {
-            // Attempt to stop existing daemon via CLI command or taskkill
-            #[cfg(target_os = "windows")]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &pid.to_string()])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-            }
         }
 
-        // Clean up PID file
+        // Only clean up PID file if we owned and stopped this backend process
         let pid_path = Self::resolve_data_dir().join("hawkoffer.pid");
         if pid_path.exists() {
             let _ = fs::remove_file(pid_path);
         }
+
+        self.owns_process.store(false, Ordering::SeqCst);
+        let mut pid_lock = self.spawned_pid.lock().map_err(|e| e.to_string())?;
+        *pid_lock = None;
 
         Ok(())
     }
@@ -377,6 +384,7 @@ impl BackendManager {
                 "Backend is offline or initializing".to_string()
             },
             data_dir: Self::resolve_data_dir().to_string_lossy().to_string(),
+            owns_process: self.owns_process.load(Ordering::SeqCst),
         }
     }
 }

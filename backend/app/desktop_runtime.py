@@ -50,6 +50,12 @@ class DesktopRuntimeManager:
         self.port = port or settings.api_port
         self.data_dir = data_dir or settings.ensure_data_dir()
         self.pid_file = self.data_dir / "hawkoffer.pid"
+        self._spawned_pid: int | None = None
+
+    @property
+    def owns_process(self) -> bool:
+        """Whether this runtime manager instance spawned and owns the daemon process."""
+        return self._spawned_pid is not None
 
     @property
     def health_url(self) -> str:
@@ -221,6 +227,7 @@ class DesktopRuntimeManager:
         # Step 1: Check if backend is already listening and healthy
         initial_check = self.check_readiness(timeout_seconds=1.0)
         if initial_check.ready:
+            self._spawned_pid = None
             pid = self.read_pid()
             logger.info("Backend is already running (PID=%s, URL=%s)", pid, self.health_url)
             return True, f"Backend is already running and ready (PID {pid or 'unknown'})"
@@ -228,6 +235,7 @@ class DesktopRuntimeManager:
         # Step 2: Check existing PID lockfile
         existing_pid = self.read_pid()
         if existing_pid is not None and self.is_process_alive(existing_pid):
+            self._spawned_pid = None
             logger.info(
                 "Process %s found running. Waiting for readiness...",
                 existing_pid,
@@ -277,6 +285,7 @@ class DesktopRuntimeManager:
             kwargs["start_new_session"] = True
 
         proc = subprocess.Popen(cmd, **kwargs)
+        self._spawned_pid = proc.pid
         self.write_pid(proc.pid)
         logger.info("Spawned daemon with PID %s", proc.pid)
 
@@ -299,8 +308,21 @@ class DesktopRuntimeManager:
         self.stop(force=True)
         return False, f"Backend failed readiness probe: {readiness.message}"
 
-    def stop(self, timeout_seconds: float = 8.0, force: bool = False) -> tuple[bool, str]:
-        """Gracefully shut down the running backend daemon."""
+    def stop(
+        self,
+        timeout_seconds: float = 8.0,
+        force: bool = False,
+        only_if_owned: bool = False,
+    ) -> tuple[bool, str]:
+        """Gracefully shut down the running backend daemon.
+
+        If only_if_owned is True and this manager instance did not spawn the daemon,
+        the running process and PID file will be preserved without terminating.
+        """
+        if only_if_owned and not self.owns_process:
+            logger.info("Preserving external backend daemon because only_if_owned=True")
+            return True, "External backend daemon preserved (not owned by this instance)"
+
         pid = self.read_pid()
         if pid is None:
             # Check if listening without PID
@@ -330,6 +352,7 @@ class DesktopRuntimeManager:
         while time.time() < deadline:
             if not self.is_process_alive(pid):
                 self.remove_pid()
+                self._spawned_pid = None
                 logger.info("Daemon PID %s terminated gracefully", pid)
                 return True, f"Daemon PID {pid} stopped cleanly"
             time.sleep(0.3)
@@ -350,6 +373,7 @@ class DesktopRuntimeManager:
             logger.error("Failed to force kill process %s: %s", pid, exc)
 
         self.remove_pid()
+        self._spawned_pid = None
         return True, f"Daemon PID {pid} terminated"
 
     def status(self) -> dict[str, Any]:
@@ -364,6 +388,7 @@ class DesktopRuntimeManager:
             "pid": pid,
             "process_alive": alive,
             "ready": readiness.ready,
+            "owns_process": self.owns_process,
             "latency_ms": round(readiness.latency_ms, 2),
             "status_code": readiness.status_code,
             "message": readiness.message,
