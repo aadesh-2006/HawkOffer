@@ -85,6 +85,7 @@ For comprehensive architecture and deployment guides, see:
 - [x] **Milestone 17**: Public SaaS Web Dashboard, Company Catalog & Application Tracker
 - [x] **Milestone 18**: Zero-Budget Deployment Automation & Cloud Readiness (Cloudflare Pages, Render, Supabase, Docker, GitHub Actions Cron)
 - [x] **Milestone 19**: First Public Deployment & Production Validation (Startup Handshake, Automated Smoke Testing & Hardening)
+- [x] **Milestone 20**: Public Deployment & Live Release (Turnkey Launch Framework, Cron URL Normalization & Live Smoke Verification)
 
 For detailed task breakdowns and acceptance criteria, see [docs/ROADMAP.md](docs/ROADMAP.md).
 
