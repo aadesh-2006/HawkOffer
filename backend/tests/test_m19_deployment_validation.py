@@ -1,5 +1,6 @@
 """Milestone 19: Deployment Validation & Production Hardening Tests."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +8,7 @@ from pydantic import ValidationError
 
 from app.api.deps import get_orchestrator
 from app.core.config import Settings
+from app.database.wait_for_db import sanitize_db_url_for_logging, wait_for_database
 from app.main import create_app
 
 
@@ -120,3 +122,97 @@ async def test_orchestrator_available_for_cron_when_internal_scheduler_disabled(
             req = MagicMock()
             req.app = app
             assert get_orchestrator(req) is mock_instance
+
+
+def test_sanitize_db_url_for_logging() -> None:
+    """Verify credentials in database connection URLs are masked in logs."""
+    url = "postgresql+asyncpg://hawk_user:super_secret_pw@ep-cool.neon.tech:5432/neondb"
+    sanitized = sanitize_db_url_for_logging(url)
+    assert "super_secret_pw" not in sanitized
+    assert "hawk_user" not in sanitized
+    assert sanitized == "postgresql+asyncpg://***:***@ep-cool.neon.tech:5432/neondb"
+
+    sqlite_url = "sqlite+aiosqlite:///C:/data/hawkoffer.db"
+    assert sanitize_db_url_for_logging(sqlite_url) == sqlite_url
+
+
+@pytest.mark.asyncio
+async def test_wait_for_database_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify wait_for_database returns True immediately on SQLite databases."""
+    monkeypatch.setattr("app.database.wait_for_db.settings.database_url", "sqlite+aiosqlite:///test.db")
+    success = await wait_for_database(timeout_seconds=5)
+    assert success is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_database_postgres_retry_and_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify wait_for_database retries transient failures and returns True on success."""
+    mock_engine = MagicMock()
+    mock_conn = AsyncMock()
+
+    # Fail on first attempt, succeed on second
+    attempts = 0
+
+    class MockConnectContext:
+        async def __aenter__(self) -> AsyncMock:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionRefusedError("Database initializing")
+            return mock_conn
+
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+            pass
+
+    mock_engine.connect.return_value = MockConnectContext()
+    mock_engine.dispose = AsyncMock()
+
+    monkeypatch.setattr(
+        "app.database.wait_for_db.settings.database_url",
+        "postgresql+asyncpg://user:pass@host:5432/db",
+    )
+    with patch("app.database.wait_for_db.create_async_engine", return_value=mock_engine):
+        success = await wait_for_database(timeout_seconds=5, interval_seconds=0.05)
+        assert success is True
+        assert attempts == 2
+        mock_engine.dispose.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_database_postgres_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify wait_for_database returns False when connection attempts exceed timeout."""
+    mock_engine = MagicMock()
+
+    class MockFailingConnectContext:
+        async def __aenter__(self) -> AsyncMock:
+            raise ConnectionRefusedError("Database down")
+
+        async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+            pass
+
+    mock_engine.connect.return_value = MockFailingConnectContext()
+    mock_engine.dispose = AsyncMock()
+
+    monkeypatch.setattr(
+        "app.database.wait_for_db.settings.database_url",
+        "postgresql+asyncpg://user:pass@host:5432/db",
+    )
+    with patch("app.database.wait_for_db.create_async_engine", return_value=mock_engine):
+        success = await wait_for_database(timeout_seconds=0.2, interval_seconds=0.05)
+        assert success is False
+        mock_engine.dispose.assert_awaited()
+
+
+def test_docker_entrypoint_script_wait_for_db() -> None:
+    """Verify docker-entrypoint.sh executes wait_for_db and supports arbitrary commands."""
+    entrypoint_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "backend"
+        / "scripts"
+        / "docker-entrypoint.sh"
+    )
+    content = entrypoint_path.read_text(encoding="utf-8")
+    assert "app.database.wait_for_db" in content
+    assert 'exec "$@"' in content
