@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import cast
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.base import utc_now
@@ -382,16 +383,19 @@ class BacklogDrainWorker:
                     await session.commit()
                     return PromotionStatus.STALE_REVISION
 
-                # 4. Check for existing equivalent notification (deduplication)
-                existing_notif_res = await session.execute(
-                    select(Notification.id).where(
-                        Notification.job_id == backlog_db.job_id,
-                        Notification.profile_id == backlog_db.profile_id,
-                        Notification.notification_type.in_(
-                            [NotificationType.JOB_ALERT, NotificationType.DESKTOP_TOAST]
-                        ),
-                    )
+                # 4. Check for existing equivalent notification (multi-tenant deduplication)
+                stmt_dedup = select(Notification.id).where(
+                    Notification.job_id == backlog_db.job_id,
+                    Notification.notification_type.in_(
+                        [NotificationType.JOB_ALERT, NotificationType.DESKTOP_TOAST]
+                    ),
                 )
+                if prof_row.user_id is not None:
+                    stmt_dedup = stmt_dedup.where(Notification.user_id == prof_row.user_id)
+                else:
+                    stmt_dedup = stmt_dedup.where(Notification.profile_id == backlog_db.profile_id)
+
+                existing_notif_res = await session.execute(stmt_dedup)
                 if existing_notif_res.scalar_one_or_none():
                     # Deduplication: mark candidate PROCESSED without creating duplicate
                     backlog_db.status = BacklogStatus.PROCESSED
@@ -419,8 +423,22 @@ class BacklogDrainWorker:
                 backlog_db.lease_token = None
                 backlog_db.lease_expires_at = None
 
-                await session.commit()
-                return PromotionStatus.PROMOTED
+                try:
+                    await session.commit()
+                    return PromotionStatus.PROMOTED
+                except IntegrityError:
+                    # Caught unique constraint race (e.g. uq_notifications_job_user_type)
+                    await session.rollback()
+                    async with self.session_factory() as race_sess:
+                        await acquire_exclusive_write_lock(race_sess)
+                        race_item = await race_sess.get(NotificationBacklog, item.id)
+                        if race_item:
+                            race_item.status = BacklogStatus.PROCESSED
+                            race_item.processed_at = now
+                            race_item.lease_token = None
+                            race_item.lease_expires_at = None
+                            await race_sess.commit()
+                    return PromotionStatus.ALREADY_PROMOTED
 
             except Exception as exc:
                 await session.rollback()

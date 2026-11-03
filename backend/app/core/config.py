@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
     auth_required: bool = False
+    cron_secret: str = "hawkoffer-dev-cron-secret-token"
 
     # M5 Background Pipeline Scheduling
     discovery_interval_seconds: int = 30

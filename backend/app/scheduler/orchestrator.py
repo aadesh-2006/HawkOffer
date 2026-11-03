@@ -5,6 +5,7 @@ import logging
 import random
 import time
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,6 +33,25 @@ logger = logging.getLogger(__name__)
 DISCOVERY_JOB_ID = "job_discovery"
 REEVALUATION_JOB_ID = "profile_reevaluation"
 BACKLOG_DRAIN_JOB_ID = "backlog_drain"
+
+
+@dataclass
+class CentralizedMonitoringResult:
+    """Execution statistics for a centralized multi-tenant monitoring cycle."""
+
+    status: str = "completed"
+    message: str = "Centralized monitoring cycle completed"
+    duration_ms: int = 0
+    companies_targeted: int = 0
+    companies_scraped: int = 0
+    companies_failed: int = 0
+    jobs_new: int = 0
+    jobs_updated: int = 0
+    jobs_existing: int = 0
+    discovery_evaluated: int = 0
+    candidates_created: int = 0
+    notifications_promoted: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 class MonitoringOrchestrator:
@@ -147,6 +167,7 @@ class MonitoringOrchestrator:
         self._discovery_lock = asyncio.Lock()
         self._reevaluation_lock = asyncio.Lock()
         self._drain_lock = asyncio.Lock()
+        self._cron_monitor_lock = asyncio.Lock()
 
     def _validate_configuration(self) -> None:
         """Validate that all scheduling parameters and batch sizes are strictly positive."""
@@ -657,6 +678,111 @@ class MonitoringOrchestrator:
             return None
         logger.info("Manually triggering immediate BacklogDrainWorker run")
         return await self.run_backlog_drain_worker()
+
+    async def run_centralized_monitoring_cycle(self) -> CentralizedMonitoringResult:
+        """Execute one complete centralized multi-tenant monitoring cycle.
+
+        1. Selects distinct active companies that have active monitoring demand from at least
+           one subscribed user (or active curated/desktop companies).
+        2. Scrapes each eligible company exactly once with lock isolation, scan state tracking,
+           and exponential backoff. Handles partial failures without aborting the batch.
+        3. Runs JobDiscoveryWorker to evaluate newly ingested jobs against subscribed users'
+           active profiles, inserting matching candidates into NotificationBacklog.
+        4. Runs BacklogDrainWorker to fairly promote candidates into user Notification records
+           with per-user deduplication.
+        """
+        if self._is_shutting_down:
+            logger.warning("Centralized monitoring cycle skipped: orchestrator is shutting down.")
+            return CentralizedMonitoringResult(
+                status="skipped_shutting_down",
+                message="Monitoring orchestrator is shutting down",
+            )
+
+        if self._cron_monitor_lock.locked():
+            logger.warning(
+                "Centralized monitoring cycle is already in progress. Skipping execution."
+            )
+            return CentralizedMonitoringResult(
+                status="skipped_overlapping",
+                message="A monitoring run is already in progress",
+            )
+
+        async with self._cron_monitor_lock:
+            start_perf = time.perf_counter()
+            result = CentralizedMonitoringResult()
+            errors: list[str] = []
+
+            # Step 1: Select distinct companies with active demand
+            async with self.session_factory() as session:
+                company_repo = CompanyRepository(session)
+                targets = await company_repo.list_active_monitored_targets()
+
+            result.companies_targeted = len(targets)
+            logger.info(
+                "Starting centralized monitoring cycle for %d company targets", len(targets)
+            )
+
+            # Step 2: Scrape each eligible company once
+            for company in targets:
+                try:
+                    scan_res = await self.run_company_scan(company.id)
+                    if scan_res is not None:
+                        if scan_res.failed_records > 0 and scan_res.total_fetched == 0:
+                            result.companies_failed += 1
+                            if scan_res.errors:
+                                errors.extend([f"{company.name}: {e}" for e in scan_res.errors])
+                        else:
+                            result.companies_scraped += 1
+                            result.jobs_new += scan_res.newly_inserted
+                            result.jobs_updated += scan_res.updated_records
+                            result.jobs_existing += scan_res.already_existing
+                    else:
+                        result.companies_failed += 1
+                except Exception as exc:
+                    logger.exception(
+                        "Failed scraping company %d (%s): %s", company.id, company.name, exc
+                    )
+                    result.companies_failed += 1
+                    errors.append(f"{company.name}: {exc}")
+
+            # Step 3: Fan-out discovery worker
+            try:
+                discovery_res = await self.run_discovery_worker()
+                if discovery_res:
+                    result.discovery_evaluated = discovery_res.evaluated_jobs
+                    result.candidates_created = discovery_res.candidate_matches
+            except Exception as exc:
+                logger.exception(
+                    "Error during discovery worker execution in monitoring cycle: %s", exc
+                )
+                errors.append(f"DiscoveryWorker: {exc}")
+
+            # Step 4: Backlog drain worker
+            try:
+                drain_res = await self.run_backlog_drain_worker()
+                if drain_res:
+                    result.notifications_promoted = drain_res.promoted_count
+            except Exception as exc:
+                logger.exception(
+                    "Error during backlog drain worker execution in monitoring cycle: %s", exc
+                )
+                errors.append(f"BacklogDrainWorker: {exc}")
+
+            duration_ms = int((time.perf_counter() - start_perf) * 1000)
+            result.duration_ms = duration_ms
+            result.errors = errors
+
+            if errors and result.companies_scraped == 0 and result.companies_targeted > 0:
+                result.status = "failed"
+                result.message = "Centralized monitoring cycle failed"
+            elif errors:
+                result.status = "partial_failure"
+                result.message = "Centralized monitoring cycle completed with partial failures"
+            else:
+                result.status = "completed"
+                result.message = "Centralized monitoring cycle completed successfully"
+
+            return result
 
     def pause_pipeline_job(self, job_id: str) -> bool:
         """Pause a scheduled pipeline job by its stable ID."""

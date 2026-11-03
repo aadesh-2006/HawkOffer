@@ -18,6 +18,8 @@ from app.filtering.models import EligibilityStatus
 from app.models.job import Job
 from app.models.outbox import BacklogStatus, JobDiscoveryOutbox, NotificationBacklog, OutboxStatus
 from app.models.preference import PreferenceProfile
+from app.models.subscription import UserCompanySubscription
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -202,48 +204,76 @@ class JobDiscoveryWorker:
         self,
         records: list[ClaimedOutboxRecord],
     ) -> tuple[dict[int, list[BacklogCandidate]], set[int]]:
-        """Evaluate claimed jobs against active preference profiles outside write transactions."""
+        """Evaluate claimed jobs against subscribed user profiles outside write transactions."""
         job_ids = [r.job_id for r in records]
 
         async with self.session_factory() as session:
-            # Read jobs and active preference profiles
+            # 1. Read jobs
             job_res = await session.execute(select(Job).where(Job.id.in_(job_ids)))
             jobs_by_id = {j.id: j for j in job_res.scalars().all()}
+            company_ids = {j.company_id for j in jobs_by_id.values()}
 
-            prof_res = await session.execute(
-                select(PreferenceProfile).where(PreferenceProfile.is_active.is_(True))
+            # 2. Resolve active profiles belonging to active users subscribed to each company
+            company_subscriber_profiles: dict[int, list[PreferenceProfile]] = {
+                cid: [] for cid in company_ids
+            }
+            if company_ids:
+                stmt_sub = (
+                    select(UserCompanySubscription.company_id, PreferenceProfile)
+                    .join(User, User.id == UserCompanySubscription.user_id)
+                    .join(PreferenceProfile, PreferenceProfile.user_id == User.id)
+                    .where(
+                        UserCompanySubscription.company_id.in_(company_ids),
+                        User.is_active.is_(True),
+                        PreferenceProfile.is_active.is_(True),
+                    )
+                )
+                sub_res = await session.execute(stmt_sub)
+                for cid, prof in sub_res.all():
+                    company_subscriber_profiles[cid].append(prof)
+
+            # 3. Resolve legacy desktop profiles (where user_id IS NULL)
+            stmt_legacy = select(PreferenceProfile).where(
+                PreferenceProfile.user_id.is_(None),
+                PreferenceProfile.is_active.is_(True),
             )
-            active_profiles = list(prof_res.scalars().all())
+            legacy_res = await session.execute(stmt_legacy)
+            legacy_profiles = list(legacy_res.scalars().all())
+
+            # For each company, combine its subscribed user profiles with legacy desktop profiles
+            for cid in company_ids:
+                company_subscriber_profiles[cid].extend(legacy_profiles)
 
         valid_outbox_ids: set[int] = set()
-        jobs_to_evaluate: list[tuple[ClaimedOutboxRecord, Job]] = []
+        jobs_with_profiles: list[tuple[ClaimedOutboxRecord, Job, list[PreferenceProfile]]] = []
 
         for record in records:
             job = jobs_by_id.get(record.job_id)
             if job is not None:
                 valid_outbox_ids.add(record.id)
-                jobs_to_evaluate.append((record, job))
+                target_profiles = company_subscriber_profiles.get(job.company_id, [])
+                if target_profiles:
+                    jobs_with_profiles.append((record, job, target_profiles))
 
-        if not active_profiles or not jobs_to_evaluate:
+        if not jobs_with_profiles:
             return {}, valid_outbox_ids
 
         # Offload synchronous filtering to thread pool so the async event loop remains responsive
         candidates_by_outbox = await asyncio.to_thread(
-            self._filter_in_thread, jobs_to_evaluate, active_profiles
+            self._filter_in_thread, jobs_with_profiles
         )
         return candidates_by_outbox, valid_outbox_ids
 
     def _filter_in_thread(
         self,
-        jobs_to_evaluate: list[tuple[ClaimedOutboxRecord, Job]],
-        active_profiles: list[PreferenceProfile],
+        jobs_with_profiles: list[tuple[ClaimedOutboxRecord, Job, list[PreferenceProfile]]],
     ) -> dict[int, list[BacklogCandidate]]:
         """Synchronous filtering execution run inside thread pool."""
         results: dict[int, list[BacklogCandidate]] = {}
 
-        for record, job in jobs_to_evaluate:
+        for record, job, profiles in jobs_with_profiles:
             outbox_candidates: list[BacklogCandidate] = []
-            for profile in active_profiles:
+            for profile in profiles:
                 eval_res = self.filtering_engine.evaluate(job, profile)
                 if eval_res.status in (EligibilityStatus.ELIGIBLE, EligibilityStatus.NEEDS_REVIEW):
                     if eval_res.semantic_match is not None:

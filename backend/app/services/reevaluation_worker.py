@@ -25,6 +25,7 @@ from app.models.outbox import (
     ReevaluationStatus,
 )
 from app.models.preference import PreferenceProfile
+from app.models.subscription import UserCompanySubscription
 
 logger = logging.getLogger(__name__)
 
@@ -278,15 +279,22 @@ class ProfileReevaluationWorker:
                 await self._supersede_task(task.id, task.lease_token)
                 return ChunkCommitStatus.SUPERSEDED, task.last_processed_job_id, 0, 0
 
-            # Read jobs chunk in ascending order
-            jobs_res = await session.execute(
-                select(Job)
-                .where(
-                    Job.id > task.last_processed_job_id,
-                    Job.id <= task.max_job_id,
+            # Read jobs chunk in ascending order, scoped to subscribed companies if user-owned
+            job_stmt = select(Job).where(
+                Job.id > task.last_processed_job_id,
+                Job.id <= task.max_job_id,
+            )
+            if profile.user_id is not None:
+                job_stmt = job_stmt.where(
+                    Job.company_id.in_(
+                        select(UserCompanySubscription.company_id).where(
+                            UserCompanySubscription.user_id == profile.user_id
+                        )
+                    )
                 )
-                .order_by(Job.id.asc())
-                .limit(self.chunk_size)
+
+            jobs_res = await session.execute(
+                job_stmt.order_by(Job.id.asc()).limit(self.chunk_size)
             )
             jobs = list(jobs_res.scalars().all())
 

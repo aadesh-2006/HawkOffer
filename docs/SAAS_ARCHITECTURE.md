@@ -1,6 +1,6 @@
 # HawkOffer SaaS Architecture Specification
 
-**Status:** APPROVED (M13 Database Foundation Implemented)  
+**Status:** APPROVED (M13–M15 Implemented)  
 **Version:** 2.1.0  
 **Target Milestone:** M13–M18 SaaS Evolution  
 **Author:** SaaS Architecture & Systems Engineering  

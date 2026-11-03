@@ -353,3 +353,21 @@ export interface CompanySubscriptionCreate {
   company_id: number;
 }
 
+export interface CronMonitoringResponse {
+  status: "completed" | "partial_failure" | "failed" | string;
+  message: string;
+  duration_ms: number;
+  companies_targeted: number;
+  companies_scraped: number;
+  companies_failed: number;
+  jobs_new: number;
+  jobs_updated: number;
+  jobs_existing: number;
+  discovery_evaluated: number;
+  candidates_created: number;
+  notifications_promoted: number;
+  errors: string[];
+  timestamp: string;
+}
+
+

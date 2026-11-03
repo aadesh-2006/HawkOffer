@@ -4,6 +4,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company import Company
+from app.models.subscription import UserCompanySubscription
+from app.models.user import User
 from app.repositories.base import BaseRepository
 from app.schemas.company import CompanyCreate, CompanyUpdate
 
@@ -47,3 +49,38 @@ class CompanyRepository(BaseRepository[Company, CompanyCreate, CompanyUpdate]):
             stmt = stmt.where(Company.is_active == is_active)
         result = await self.session.execute(stmt)
         return result.scalar() or 0
+
+    async def list_active_monitored_targets(self) -> list[Company]:
+        """Retrieve distinct active companies with active monitoring demand.
+
+        In multi-tenant SaaS mode, returns active companies that have at least one active user
+        subscription OR are curated companies.
+        In desktop / unauthenticated single-user mode (zero subscriptions recorded), returns
+        all active companies to preserve complete backward compatibility.
+        """
+        sub_count_res = await self.session.execute(
+            select(func.count(UserCompanySubscription.id))
+        )
+        has_subscriptions = (sub_count_res.scalar() or 0) > 0
+
+        if not has_subscriptions:
+            return await self.list_active()
+
+        stmt = (
+            select(Company)
+            .where(Company.is_active.is_(True))
+            .where(
+                (Company.is_curated.is_(True))
+                | (
+                    Company.id.in_(
+                        select(UserCompanySubscription.company_id)
+                        .join(User, User.id == UserCompanySubscription.user_id)
+                        .where(User.is_active.is_(True))
+                    )
+                )
+            )
+            .distinct()
+            .order_by(Company.name.asc(), Company.id.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
