@@ -64,11 +64,21 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, v: Any) -> list[str]:
         """Parse comma-separated strings or string lists into normalized origin URLs."""
+        raw_list: list[str] = []
         if isinstance(v, str):
-            return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
-        if isinstance(v, list):
-            return [str(o).strip().rstrip("/") for o in v if str(o).strip()]
-        return []
+            raw_list = [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
+        elif isinstance(v, list):
+            raw_list = [str(o).strip().rstrip("/") for o in v if str(o).strip()]
+
+        cleaned: list[str] = []
+        for origin in raw_list:
+            if origin == "*":
+                raise ValueError(
+                    "Wildcard '*' CORS origin is strictly prohibited when credentials are enabled. "
+                    "Specify explicit origins (e.g., https://yourdomain.com)."
+                )
+            cleaned.append(origin)
+        return cleaned
 
     def get_cors_origins(self) -> list[str]:
         """Return list of configured external CORS origins."""
@@ -174,6 +184,38 @@ class Settings(BaseSettings):
         if len(secret) < 32:
             return False, "HAWKOFFER_CRON_SECRET must be at least 32 characters in production"
         return True, "Valid"
+
+    def validate_production_jwt_secret(self) -> tuple[bool, str]:
+        """Validate whether the configured JWT secret key meets production security standards.
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        if not self.jwt_secret_key:
+            return False, "HAWKOFFER_JWT_SECRET_KEY is not configured"
+        secret = self.jwt_secret_key.strip()
+        if (
+            secret.lower() in KNOWN_INSECURE_CRON_SECRETS
+            or secret == "hawkoffer-dev-secret-key-change-in-production-min-32-chars"
+        ):
+            return False, "HAWKOFFER_JWT_SECRET_KEY uses a known insecure development default"
+        if len(secret) < 32:
+            return False, "HAWKOFFER_JWT_SECRET_KEY must be at least 32 characters in production"
+        return True, "Valid"
+
+    def validate_production_configuration(self) -> list[str]:
+        """Validate all critical production settings. Returns list of error reasons."""
+        errors: list[str] = []
+        is_jwt_valid, jwt_reason = self.validate_production_jwt_secret()
+        if not is_jwt_valid:
+            errors.append(jwt_reason)
+        is_cron_valid, cron_reason = self.validate_production_cron_secret()
+        if not is_cron_valid:
+            errors.append(cron_reason)
+        for origin in self.get_cors_origins():
+            if origin == "*":
+                errors.append("Wildcard '*' CORS origin is not permitted with credentials")
+        return errors
 
 
 # Global settings singleton

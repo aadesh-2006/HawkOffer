@@ -50,6 +50,14 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("HawkOffer application runtime starting up...")
 
+        # 0. Validate production configuration if running in production
+        if settings.is_production:
+            config_errors = settings.validate_production_configuration()
+            if config_errors:
+                error_msg = "; ".join(config_errors)
+                logger.critical("Fatal: Production configuration validation failed: %s", error_msg)
+                raise RuntimeError(f"Production configuration validation failed: {error_msg}")
+
         # 1. Initialize database tables if requested
         if init_database:
             try:
@@ -59,21 +67,22 @@ def create_app(
                 logger.error("Failed to initialize database during startup: %s", exc)
                 raise
 
-        # 2. Start scheduler orchestrator if requested and enabled
+        # 2. Instantiate orchestrator instance if requested or needed for cron
+        if start_scheduler and app.state.orchestrator is None:
+            app.state.orchestrator = MonitoringOrchestrator(
+                session_factory=app.state.session_factory
+            )
+
         if effective_start_scheduler:
-            if app.state.orchestrator is None:
-                app.state.orchestrator = MonitoringOrchestrator(
-                    session_factory=app.state.session_factory
-                )
             try:
-                logger.info("Starting MonitoringOrchestrator...")
+                logger.info("Starting MonitoringOrchestrator internal scheduler...")
                 await app.state.orchestrator.start()
                 logger.info("MonitoringOrchestrator started successfully")
             except Exception as exc:
                 logger.error("Failed to start MonitoringOrchestrator: %s", exc)
                 raise
         else:
-            logger.info("Internal scheduler disabled by configuration or parameter")
+            logger.info("Internal scheduler disabled by config (on-demand cron only)")
 
         yield
 
