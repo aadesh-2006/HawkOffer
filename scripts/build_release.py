@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 
 def calculate_sha256(filepath: Path) -> str:
@@ -32,7 +32,7 @@ def calculate_sha256(filepath: Path) -> str:
 def run_command(cmd: list[str], cwd: Path, desc: str) -> None:
     """Run a command with structured logging and error checking."""
     print(f"--> [{desc}] Running: {' '.join(cmd)}")
-    res = subprocess.run(cmd, cwd=str(cwd), shell=(sys.platform == "win32" and cmd[0].endswith(".cmd")))
+    res = subprocess.run(cmd, cwd=str(cwd), shell=(sys.platform == "win32" and cmd[0].endswith(".cmd")), check=False)
     if res.returncode != 0:
         print(f"ERROR: [{desc}] failed with exit code {res.returncode}", file=sys.stderr)
         sys.exit(res.returncode)
@@ -91,35 +91,65 @@ def main() -> int:
     print(f"   SHA-256: {backend_sha256}")
     print()
 
-    # Step 3: Copy to Root dist/
+    # Step 3: Assembling Release Dist Artifacts
     print("STEP 3: Assembling Release Dist Artifacts...")
     release_backend = dist_dir / backend_exe.name
     shutil.copy2(backend_exe, release_backend)
 
+    # Check for compiled Tauri NSIS installer
+    nsis_installer = (
+        repo_root
+        / "src-tauri"
+        / "target"
+        / "release"
+        / "bundle"
+        / "nsis"
+        / "HawkOffer_0.1.0_x64-setup.exe"
+    )
+    installer_artifact = None
+    if nsis_installer.exists():
+        release_installer = dist_dir / nsis_installer.name
+        shutil.copy2(nsis_installer, release_installer)
+        installer_sha256 = calculate_sha256(release_installer)
+        installer_size_mb = release_installer.stat().st_size / (1024 * 1024)
+        print(f"   [OK] Native NSIS installer verified ({installer_size_mb:.2f} MB)")
+        print(f"   SHA-256: {installer_sha256}")
+        installer_artifact = {
+            "name": release_installer.name,
+            "size_bytes": release_installer.stat().st_size,
+            "size_mb": round(installer_size_mb, 2),
+            "sha256": installer_sha256,
+            "path": str(release_installer.relative_to(repo_root)),
+        }
+
     # Step 4: Write Release Manifest
+    manifest_artifacts: dict[str, Any] = {
+        "backend_executable": {
+            "name": backend_exe.name,
+            "size_bytes": backend_exe.stat().st_size,
+            "size_mb": round(backend_size_mb, 2),
+            "sha256": backend_sha256,
+            "path": str(release_backend.relative_to(repo_root)),
+        },
+        "frontend_bundle": {
+            "directory": "frontend/dist",
+            "entrypoint": "frontend/dist/index.html",
+        },
+        "tauri_sidecar": {
+            "target_triple": "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu",
+            "filename": "hawkoffer-backend-x86_64-pc-windows-msvc.exe" if sys.platform == "win32" else "hawkoffer-backend-x86_64-unknown-linux-gnu",
+        },
+    }
+    if installer_artifact:
+        manifest_artifacts["nsis_installer"] = installer_artifact
+
     manifest = {
         "app_name": "HawkOffer",
         "version": "0.1.0",
         "release_type": "desktop_v1",
         "built_at": datetime.now(UTC).isoformat(),
         "platform": sys.platform,
-        "artifacts": {
-            "backend_executable": {
-                "name": backend_exe.name,
-                "size_bytes": backend_exe.stat().st_size,
-                "size_mb": round(backend_size_mb, 2),
-                "sha256": backend_sha256,
-                "path": str(release_backend.relative_to(repo_root)),
-            },
-            "frontend_bundle": {
-                "directory": "frontend/dist",
-                "entrypoint": "frontend/dist/index.html",
-            },
-            "tauri_sidecar": {
-                "target_triple": "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu",
-                "filename": f"hawkoffer-backend-x86_64-pc-windows-msvc.exe" if sys.platform == "win32" else "hawkoffer-backend-x86_64-unknown-linux-gnu",
-            },
-        },
+        "artifacts": manifest_artifacts,
         "quality_gates": {
             "backend_tests": "306 passed",
             "frontend_tests": "33 passed",
