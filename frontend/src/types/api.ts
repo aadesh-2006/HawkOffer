@@ -366,8 +366,38 @@ export interface CronMonitoringResponse {
   discovery_evaluated: number;
   candidates_created: number;
   notifications_promoted: number;
+  pushes_attempted: number;
+  pushes_delivered: number;
   errors: string[];
   timestamp: string;
 }
+
+export interface VapidPublicKeyResponse {
+  public_key: string;
+}
+
+export interface PushKeys {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscriptionCreate {
+  endpoint: string;
+  keys: PushKeys;
+  user_agent?: string | null;
+}
+
+export interface PushSubscriptionRead {
+  id: number;
+  user_id: number;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  failure_count: number;
+  created_at: string;
+  last_used_at: string;
+}
+
 
 

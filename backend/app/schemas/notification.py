@@ -18,7 +18,10 @@ class DeliveryStatus(StrEnum):
     """External delivery dispatch status."""
 
     PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
     DELIVERED = "DELIVERED"
+    SENT = "SENT"
+    RETRY = "RETRY"
     FAILED = "FAILED"
     NOT_REQUIRED = "NOT_REQUIRED"
 

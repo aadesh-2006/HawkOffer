@@ -625,8 +625,9 @@ def test_alembic_m15_1_migration_lifecycle() -> None:
     import tempfile
     from pathlib import Path
 
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name

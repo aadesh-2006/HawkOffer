@@ -61,8 +61,12 @@ from app.schemas.preference import (
     PreferenceProfileUpdate,
 )
 from app.schemas.push import (
+    PushDispatchResponse,
+    PushKeys,
     PushSubscriptionCreate,
     PushSubscriptionRead,
+    PushUnsubscribeRequest,
+    VapidPublicKeyResponse,
 )
 from app.schemas.scan_state import (
     ScanStateBase,
@@ -118,8 +122,11 @@ __all__ = [
     "PreferenceProfileCreate",
     "PreferenceProfileRead",
     "PreferenceProfileUpdate",
+    "PushDispatchResponse",
+    "PushKeys",
     "PushSubscriptionCreate",
     "PushSubscriptionRead",
+    "PushUnsubscribeRequest",
     "ScanStateBase",
     "ScanStateCreate",
     "ScanStateRead",
@@ -137,5 +144,6 @@ __all__ = [
     "UserRead",
     "UserRegisterRequest",
     "UserUpdate",
+    "VapidPublicKeyResponse",
     "WorkerTriggerResponse",
 ]

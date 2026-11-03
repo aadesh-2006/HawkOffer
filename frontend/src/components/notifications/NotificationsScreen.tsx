@@ -12,6 +12,12 @@ import {
 import { useApp } from "../../context/AppContext";
 import { NotificationRead, NotificationStatus } from "../../types/api";
 import { notificationsApi } from "../../services/api";
+import {
+  getPushStatus,
+  subscribeToPush,
+  unsubscribeFromPush,
+  PushStatus,
+} from "../../services/pushService";
 import { Badge } from "../common/Badge";
 import { Button } from "../common/Button";
 import { LoadingSpinner } from "../common/LoadingSpinner";
@@ -27,6 +33,40 @@ export const NotificationsScreen: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<TabFilter>("UNREAD");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBatchActionInProgress, setIsBatchActionInProgress] = useState<boolean>(false);
+  const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  const [isPushLoading, setIsPushLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    getPushStatus().then(setPushStatus).catch(() => {});
+  }, []);
+
+  const handleTogglePush = async () => {
+    setIsPushLoading(true);
+    try {
+      if (pushStatus?.isSubscribed) {
+        const res = await unsubscribeFromPush();
+        if (res.success) {
+          showToast("Web Push notifications disabled for this device", "info");
+        } else {
+          showToast(res.error || "Failed to disable Web Push", "error");
+        }
+      } else {
+        const res = await subscribeToPush();
+        if (res.success) {
+          showToast("Web Push notifications enabled! You will receive alerts even when offline.", "success");
+        } else {
+          showToast(res.error || "Failed to enable Web Push", "error");
+        }
+      }
+      const updated = await getPushStatus();
+      setPushStatus(updated);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Error updating push notifications";
+      showToast(msg, "error");
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
 
   const fetchNotifications = useCallback(async () => {
     setIsLoading(true);
@@ -209,6 +249,48 @@ export const NotificationsScreen: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* Web Push Status Bar */}
+        {pushStatus && !pushStatus.isTauri && pushStatus.supported && (
+          <div
+            className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+            data-testid="web-push-status-bar"
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  pushStatus.isSubscribed ? "bg-emerald-500" : "bg-amber-500"
+                }`}
+              />
+              <div>
+                <span className="font-semibold text-slate-800 dark:text-slate-200">
+                  {pushStatus.isSubscribed
+                    ? "Browser Web Push Active"
+                    : "Browser Web Push Notifications"}
+                </span>
+                <p className="text-slate-500 dark:text-slate-400 text-[11px]">
+                  {pushStatus.isSubscribed
+                    ? "This device is registered to receive alerts even when HawkOffer is closed."
+                    : pushStatus.permission === "denied"
+                    ? "Notifications are blocked in browser settings. Unblock to enable."
+                    : "Receive instant browser notifications whenever newly matching jobs are posted."}
+                </p>
+              </div>
+            </div>
+
+            {pushStatus.permission !== "denied" && (
+              <Button
+                variant={pushStatus.isSubscribed ? "outline" : "primary"}
+                size="sm"
+                onClick={handleTogglePush}
+                isLoading={isPushLoading}
+                data-testid="btn-toggle-web-push"
+              >
+                {pushStatus.isSubscribed ? "Disable Push" : "Enable Web Push"}
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* Batch Operations Bar (visible when items selected) */}
         {selectedIds.size > 0 && (

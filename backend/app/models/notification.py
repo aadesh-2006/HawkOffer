@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -35,7 +35,17 @@ class Notification(Base):
     )  # 'UNREAD', 'READ', 'DISMISSED'
     delivery_status: Mapped[str] = mapped_column(
         String(50), default="PENDING", nullable=False
-    )  # 'PENDING', 'DELIVERED', 'FAILED', 'NOT_REQUIRED'
+    )  # 'PENDING', 'PROCESSING', 'DELIVERED', 'SENT', 'RETRY', 'FAILED', 'NOT_REQUIRED'
+
+    delivery_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_delivery_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivery_lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delivery_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_delivery_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -78,6 +88,12 @@ class Notification(Base):
         Index("ix_notifications_job_id", "job_id"),
         Index("ix_notifications_status", "status"),
         Index("ix_notifications_delivery_status", "delivery_status"),
+        Index(
+            "ix_notifications_delivery_claim",
+            "delivery_status",
+            "next_delivery_attempt_at",
+            "delivery_lease_expires_at",
+        ),
         Index("ix_notifications_delivered_at", "delivered_at"),
         Index("ix_notifications_read_at", "read_at"),
         Index("ix_notifications_dismissed_at", "dismissed_at"),

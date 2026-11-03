@@ -25,6 +25,8 @@ import {
   PreferenceProfileCreate,
   PreferenceProfileRead,
   PreferenceProfileUpdate,
+  PushSubscriptionCreate,
+  PushSubscriptionRead,
   ScanStateRead,
   ScanTriggerResponse,
   SystemStatusResponse,
@@ -34,6 +36,7 @@ import {
   UserLoginRequest,
   UserRead,
   UserRegisterRequest,
+  VapidPublicKeyResponse,
   WorkerTriggerResponse,
 } from "../types/api";
 
@@ -458,4 +461,29 @@ export const subscriptionsApi = {
       method: "DELETE",
     }),
 };
+
+// --------------------------------------------------------------------------
+// WEB PUSH API (RFC 8291 / RFC 8292)
+// --------------------------------------------------------------------------
+
+export const pushApi = {
+  getVapidPublicKey: () =>
+    request<VapidPublicKeyResponse>("/push/vapid-public-key"),
+
+  subscribe: (payload: PushSubscriptionCreate) =>
+    request<PushSubscriptionRead>("/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  listSubscriptions: () =>
+    request<PushSubscriptionRead[]>("/push/subscriptions"),
+
+  unsubscribe: (endpoint: string) =>
+    request<MessageResponse>("/push/unsubscribe", {
+      method: "POST",
+      body: JSON.stringify({ endpoint }),
+    }),
+};
+
 

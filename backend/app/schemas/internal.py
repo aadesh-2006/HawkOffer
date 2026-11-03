@@ -22,5 +22,7 @@ class CronMonitoringResponse(BaseModel):
     discovery_evaluated: int = Field(description="Total jobs evaluated against subscriber profiles")
     candidates_created: int = Field(description="Backlog candidates generated for subscribers")
     notifications_promoted: int = Field(description="User notifications promoted into outbox")
+    pushes_attempted: int = Field(default=0, description="Web Push messages attempted")
+    pushes_delivered: int = Field(default=0, description="Web Push messages successfully delivered")
     errors: list[str] = Field(default_factory=list, description="Diagnostic error messages")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

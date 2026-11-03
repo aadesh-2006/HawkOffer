@@ -15,7 +15,7 @@ flowchart LR
     M13 --> M14["M14: User Auth & Tenant Isolation<br/>(COMPLETED)"]
     M14 --> M15["M15: Centralized Monitoring & Fan-Out<br/>(COMPLETED)"]
     M15 --> M15_1["M15.1: Production Safety & Hardening<br/>(COMPLETED)"]
-    M15_1 --> M16["M16: Web Push Notifications (RFC 8291)"]
+    M15_1 --> M16["M16: Web Push Notifications (RFC 8291)<br/>(COMPLETED)"]
     M16 --> M17["M17: Public Web Dashboard & Application Tracking"]
     M17 --> M18["M18: Zero-Budget Cloud Deployment & Acceptance"]
 ```
@@ -156,23 +156,36 @@ flowchart LR
 ---
 
 ### Milestone 16: Web Push Notifications (RFC 8291/8292) & Background Dispatch
-*Objective: Build an autonomous, zero-cost push notification service delivering immediate job matches to browsers even when offline.*
+*Status: COMPLETED (Verified across 382 backend tests & 34 frontend tests, 12 new M16 push tests)*  
+*Objective: Build an autonomous, zero-cost push notification service delivering immediate job matches to browsers even when offline or tab is closed.*
 
-- **Scope & Deliverables**:
+- **Delivered Capabilities**:
   1. **VAPID Key Generation & Push Infrastructure**:
      - Key pair generation and configuration (`HAWKOFFER_VAPID_PUBLIC_KEY`, `HAWKOFFER_VAPID_PRIVATE_KEY`, `HAWKOFFER_VAPID_CLAIMS_EMAIL`).
+     - Ephemeral dev keypair generation for seamless local development without manual config.
+     - Strict production validation requiring explicit keys in production (`validate_production_vapid()`).
      - API endpoint: `GET /api/v1/push/vapid-public-key` for browser initialization.
-     - API endpoint: `POST /api/v1/push/subscribe` and `POST /api/v1/push/unsubscribe`.
-  2. **Browser Service Worker (`sw.js`)**:
-     - Implement standard Service Worker handling `push` events.
-     - Render native browser notification cards with title, company, match score, and direct application URL.
-     - Handle `notificationclick` events: focus existing tab or open job application page in new tab.
-  3. **Async Dispatch Worker & 410 Cleanup**:
-     - `WebPushDispatcher` service using `pywebpush` to sign and encrypt payloads.
-     - Automatic handling of HTTP `410 Gone` and `404 Not Found` responses from Google FCM / Apple APNs / Mozilla Autopush: automatically deletes dead subscriptions from the database.
-- **Verification Gates**:
-  - Mocked push gateway tests verifying encryption and VAPID JWT generation.
-  - Subscription lifecycle test: subscribe, dispatch, simulate 410 Gone, verify automatic database pruning.
+     - API endpoints: `POST /api/v1/push/subscribe`, `GET /api/v1/push/subscriptions`, and `POST /api/v1/push/unsubscribe`.
+     - Strict tenant isolation: users can only view and manage their own subscriptions; cross-user unsubscriptions return 404.
+  2. **Browser Service Worker (`sw.js`) & Frontend Client**:
+     - Standard Service Worker handling `push` and `notificationclick` events.
+     - Parses JSON payload (`title`, `body`, `url`, `tag`, `data`).
+     - `notificationclick` focuses existing application tabs or opens target job detail view `/jobs/:id`.
+     - `frontend/src/services/pushService.ts` handles Web Push feature detection, Tauri desktop bypass, permission requesting on user interaction, subscription conversion, and API communication.
+     - Responsive Web Push opt-in widget in `NotificationsScreen.tsx`.
+  3. **Async Dispatch Worker & Idempotent Per-Device Tracking**:
+     - `WebPushDispatcher` background service claiming notification batches with database lease locks (`push_lease_ttl_seconds`).
+     - Core Invariant Preserved: In-app notification creation and Web Push delivery are decoupled. Failed push deliveries NEVER delete or corrupt in-app notifications.
+     - Multi-device idempotency: `NotificationPushDelivery` tracking ensures already-delivered devices do not receive duplicate alerts on retries.
+     - Automatic pruning of HTTP `410 Gone` and `404 Not Found` responses from Google FCM, Mozilla Autopush, and Apple APNs.
+     - Transient failure bounded exponential backoff (`push_max_attempts=3`).
+     - Integrated into continuous scheduler and Step 5 of `run_centralized_monitoring_cycle()`.
+- **Verification Gates Achieved**:
+  - 12 comprehensive M16 tests passed (`tests/test_m16_web_push.py`).
+  - Full backend test suite: 382 passed.
+  - Frontend test suite: 34 passed.
+  - Static typing & linting: MyPy and Ruff passed with 0 errors.
+  - Frontend production build: Vite compiled cleanly in 2.47s.
   - Zero paid third-party push dependencies.
 
 ---

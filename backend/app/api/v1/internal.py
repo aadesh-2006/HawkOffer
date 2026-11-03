@@ -106,6 +106,8 @@ async def trigger_cron_monitor(
         discovery_evaluated=result.discovery_evaluated,
         candidates_created=result.candidates_created,
         notifications_promoted=result.notifications_promoted,
+        pushes_attempted=result.pushes_attempted,
+        pushes_delivered=result.pushes_delivered,
         errors=result.errors,
         timestamp=datetime.now(UTC),
     )

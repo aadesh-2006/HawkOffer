@@ -16,7 +16,7 @@ from app.models.outbox import (
     SystemDrainState,
 )
 from app.models.preference import PreferenceProfile
-from app.models.push import PushSubscription
+from app.models.push import NotificationPushDelivery, PushSubscription
 from app.models.scan_state import CompanyScanState
 from app.models.semantic import JobEmbedding
 from app.models.subscription import UserCompanySubscription
@@ -35,6 +35,7 @@ __all__ = [
     "MonitoringLog",
     "Notification",
     "NotificationBacklog",
+    "NotificationPushDelivery",
     "OutboxStatus",
     "PreferenceProfile",
     "ProfileReevaluationTask",

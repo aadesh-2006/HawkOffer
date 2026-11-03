@@ -26,6 +26,7 @@ from app.services.backlog_drain_worker import BacklogDrainWorker, DrainRunResult
 from app.services.discovery_worker import DiscoveryRunResult, JobDiscoveryWorker
 from app.services.ingestion_service import IngestionResult, IngestionService
 from app.services.lease_service import DistributedLeaseService
+from app.services.push_dispatcher import PushDispatchResult, WebPushDispatcher
 from app.services.reevaluation_worker import ProfileReevaluationWorker, ReevaluationRunResult
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 DISCOVERY_JOB_ID = "job_discovery"
 REEVALUATION_JOB_ID = "profile_reevaluation"
 BACKLOG_DRAIN_JOB_ID = "backlog_drain"
+PUSH_DISPATCH_JOB_ID = "web_push_dispatch"
 
 
 @dataclass
@@ -52,6 +54,8 @@ class CentralizedMonitoringResult:
     discovery_evaluated: int = 0
     candidates_created: int = 0
     notifications_promoted: int = 0
+    pushes_attempted: int = 0
+    pushes_delivered: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -169,9 +173,13 @@ class MonitoringOrchestrator:
         self._reevaluation_lock = asyncio.Lock()
         self._drain_lock = asyncio.Lock()
         self._cron_monitor_lock = asyncio.Lock()
+        self._push_lock = asyncio.Lock()
 
         # Zero-cost distributed lease service for cross-process multi-tenant coordination
         self.lease_service = DistributedLeaseService(self.session_factory)
+
+        # M16 Web Push Dispatcher
+        self.push_dispatcher = WebPushDispatcher(self.session_factory)
 
     def _validate_configuration(self) -> None:
         """Validate that all scheduling parameters and batch sizes are strictly positive."""
@@ -523,6 +531,26 @@ class MonitoringOrchestrator:
             self.scheduler_max_instances,
         )
 
+        # 4. Web Push Dispatcher
+        self.scheduler.add_job(
+            func=self.run_push_dispatcher,
+            id=PUSH_DISPATCH_JOB_ID,
+            name="Web Push Dispatcher",
+            trigger=IntervalTrigger(
+                seconds=settings.push_dispatch_interval_seconds, timezone="UTC"
+            ),
+            replace_existing=True,
+            max_instances=self.scheduler_max_instances,
+            coalesce=True,
+            misfire_grace_time=self.scheduler_misfire_grace_time_seconds,
+        )
+        logger.info(
+            "Registered scheduled job '%s' (%ds interval, max_instances=%d)",
+            PUSH_DISPATCH_JOB_ID,
+            settings.push_dispatch_interval_seconds,
+            self.scheduler_max_instances,
+        )
+
     async def run_discovery_worker(self) -> DiscoveryRunResult | None:
         """Execute one cycle of JobDiscoveryWorker with lock isolation and observability."""
         if self._is_shutting_down:
@@ -683,6 +711,56 @@ class MonitoringOrchestrator:
         logger.info("Manually triggering immediate BacklogDrainWorker run")
         return await self.run_backlog_drain_worker()
 
+    async def run_push_dispatcher(self) -> PushDispatchResult | None:
+        """Execute one cycle of WebPushDispatcher with lock isolation and observability."""
+        if self._is_shutting_down:
+            logger.warning("WebPushDispatcher skipped: orchestrator is shutting down.")
+            return None
+
+        lock = self._push_lock
+        if lock.locked():
+            logger.warning("WebPushDispatcher is already running locally. Skipping execution.")
+            return None
+
+        async with lock:
+            if self._is_shutting_down:
+                logger.warning("WebPushDispatcher aborted: orchestrator is shutting down.")
+                return None
+
+            worker_name = "WebPushDispatcher"
+            start_perf = time.perf_counter()
+            logger.info("Starting %s at %s", worker_name, datetime.now(UTC).isoformat())
+            try:
+                result = await self.push_dispatcher.run_once()
+                duration = time.perf_counter() - start_perf
+                logger.info(
+                    "Completed %s in %.3fs: claimed=%d, attempts=%d, successful=%d, "
+                    "transient_failures=%d, pruned=%d, completed=%d, retry=%d, failed=%d",
+                    worker_name,
+                    duration,
+                    result.notifications_claimed,
+                    result.attempted_pushes,
+                    result.successful_pushes,
+                    result.transient_failures,
+                    result.pruned_subscriptions,
+                    result.completed_notifications,
+                    result.retry_notifications,
+                    result.failed_notifications,
+                )
+                return result
+            except Exception as exc:
+                duration = time.perf_counter() - start_perf
+                logger.exception("Error executing %s after %.3fs: %s", worker_name, duration, exc)
+                return None
+
+    async def trigger_push_dispatch_now(self) -> PushDispatchResult | None:
+        """Trigger an immediate out-of-band Web Push dispatch run."""
+        if self._is_shutting_down:
+            logger.warning("Manual push trigger rejected: orchestrator is shutting down.")
+            return None
+        logger.info("Manually triggering immediate WebPushDispatcher run")
+        return await self.run_push_dispatcher()
+
     async def run_centralized_monitoring_cycle(self) -> CentralizedMonitoringResult:
         """Execute one complete centralized multi-tenant monitoring cycle.
 
@@ -795,6 +873,18 @@ class MonitoringOrchestrator:
                         "Error during backlog drain worker execution in monitoring cycle: %s", exc
                     )
                     errors.append(f"BacklogDrainWorker: {exc}")
+
+                # Step 5: Web Push dispatcher
+                try:
+                    push_res = await self.run_push_dispatcher()
+                    if push_res is not None:
+                        result.pushes_attempted = push_res.attempted_pushes
+                        result.pushes_delivered = push_res.successful_pushes
+                except Exception as exc:
+                    logger.exception(
+                        "Error during WebPushDispatcher execution in monitoring cycle: %s", exc
+                    )
+                    errors.append(f"WebPushDispatcher: {exc}")
 
             except Exception as exc:
                 logger.exception("Unexpected exception in centralized monitoring cycle: %s", exc)

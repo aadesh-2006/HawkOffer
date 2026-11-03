@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     monitor_curated_without_subscribers: bool = False
     monitoring_lease_ttl_seconds: int = 300
 
+    # M16 Web Push Notifications (RFC 8291 / RFC 8292) & Background Dispatch
+    vapid_public_key: str | None = None
+    vapid_private_key: str | None = None
+    vapid_claims_email: str = "mailto:support@hawkoffer.dev"
+    push_dispatch_batch_size: int = 50
+    push_dispatch_interval_seconds: int = 30
+    push_lease_ttl_seconds: int = 120
+    push_max_attempts: int = 3
+
     # M5 Background Pipeline Scheduling
     discovery_interval_seconds: int = 30
     reevaluation_interval_seconds: int = 60

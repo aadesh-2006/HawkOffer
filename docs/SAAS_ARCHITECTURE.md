@@ -290,14 +290,26 @@ sequenceDiagram
 
     API->>DB: Promote Backlog candidates -> Notifications table
     API->>PushWorker: Dispatch pending unread notifications
-    PushWorker->>DB: Query User Push Subscriptions
-    PushWorker->>User: Deliver RFC 8291 Web Push via VAPID
-    User-->>PushWorker: 201 Created (or 410 Gone if expired)
+    PushWorker->>DB: Claim pending batch (delivery_lease_token & TTL)
+    PushWorker->>DB: Query User Push Subscriptions & prior device delivery records
+    loop For each pending device subscription
+        PushWorker->>User: Deliver RFC 8291 Web Push via VAPID (pywebpush)
+        alt 201 Created
+            PushWorker->>DB: Upsert NotificationPushDelivery(status='DELIVERED')
+        else 410 Gone / 404 Not Found
+            PushWorker->>DB: Prune dead PushSubscription from DB
+        else 5xx / 429 / Timeout
+            PushWorker->>DB: Upsert NotificationPushDelivery(status='FAILED')
+        end
+    end
+    PushWorker->>DB: Update Notification(delivery_status: SENT / RETRY / FAILED, release lease)
 ```
 
-### Performance & Memory Budgeting
+### 1-to-N Matching & Delivery Invariants
 1. **Filtering in Parallel Chunks**: The `JobFilteringEngine` is 100% pure Python with zero database I/O. Evaluating 1 job against 1,000 profiles requires less than 8ms of CPU time.
 2. **Subscription Pre-filtering**: Before running deep regex or semantic matching, jobs are filtered by `user_company_subscriptions`. If a user is not subscribed to Company X, their profiles are never evaluated against Company X jobs, reducing evaluation volume by 95%+.
+3. **Decoupled Notification Invariant**: In-app `Notification` creation and Web Push dispatch are strictly decoupled. Failed or retried browser pushes never delete, roll back, or alter the unread status of the in-app notification.
+4. **Device-Level Idempotency**: `NotificationPushDelivery` records map `(notification_id, subscription_id)`. If Device 1 succeeds while Device 2 fails transiently, subsequent retries only attempt Device 2, preventing duplicate push spam to Device 1.
 3. **Deterministic Memory Cap**: Worker runs process in batches of 50 outbox jobs, capping peak worker RAM under 180MB (well within the 512MB free container limit).
 
 ---
