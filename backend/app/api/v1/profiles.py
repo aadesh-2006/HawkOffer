@@ -88,6 +88,13 @@ async def get_profile(
     return PreferenceProfileRead.model_validate(profile)
 
 
+@router.put(
+    "/{profile_id}",
+    response_model=PreferenceProfileRead,
+    status_code=status.HTTP_200_OK,
+    summary="Update preference profile (PUT alias)",
+    include_in_schema=False,
+)
 @router.patch(
     "/{profile_id}",
     response_model=PreferenceProfileRead,
