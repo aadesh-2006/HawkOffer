@@ -1,6 +1,17 @@
 import React from "react";
-import { RefreshCw, Moon, Sun, Monitor, Wifi, WifiOff, Sparkles, Download } from "lucide-react";
+import {
+  RefreshCw,
+  Moon,
+  Sun,
+  Monitor,
+  Wifi,
+  WifiOff,
+  Sparkles,
+  Download,
+  LogOut,
+} from "lucide-react";
 import { useApp, TabId } from "../../context/AppContext";
+import { useAuth } from "../../context/AuthContext";
 import { Button } from "../common/Button";
 import { systemApi } from "../../services/api";
 import { ModelStatusInfo } from "../../types/api";
@@ -17,6 +28,10 @@ const TAB_TITLES: Record<TabId, { title: string; subtitle: string }> = {
   companies: {
     title: "Monitored Companies",
     subtitle: "Configure career sites, platforms, and trigger immediate career scans.",
+  },
+  applications: {
+    title: "Job Applications",
+    subtitle: "Track jobs across hiring pipeline stages, from saved to offer.",
   },
   profiles: {
     title: "Preference Profiles",
@@ -46,6 +61,7 @@ export const Header: React.FC = () => {
     setTheme,
     refreshAll,
   } = useApp();
+  const { user, isAuthenticated, logout, openAuthModal } = useAuth();
 
   const [refreshing, setRefreshing] = React.useState(false);
   const [modelStatus, setModelStatus] = React.useState<ModelStatusInfo | null>(null);
@@ -178,6 +194,43 @@ export const Header: React.FC = () => {
         >
           Refresh
         </Button>
+
+        {/* User Account Controls */}
+        {isAuthenticated && user ? (
+          <div
+            className="flex items-center gap-2 pl-1 border-l border-slate-200 dark:border-slate-800"
+            data-testid="header-user-menu"
+          >
+            <div className="flex items-center gap-2 px-2.5 py-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg text-xs font-semibold text-slate-800 dark:text-slate-200">
+              <div className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">
+                {user.email[0].toUpperCase()}
+              </div>
+              <span className="hidden sm:inline truncate max-w-xs">{user.full_name || user.email}</span>
+            </div>
+
+            <button
+              onClick={() => logout()}
+              title="Sign Out"
+              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label="Sign Out"
+              data-testid="btn-sign-out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 pl-1 border-l border-slate-200 dark:border-slate-800">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openAuthModal("login")}
+              className="text-xs"
+              data-testid="header-login-btn"
+            >
+              Sign In
+            </Button>
+          </div>
+        )}
 
         {/* Theme Cycle Button */}
         <button

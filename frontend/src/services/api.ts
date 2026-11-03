@@ -84,7 +84,24 @@ export function setAuthToken(token: string | null): void {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export function getRefreshToken(): string | null {
+  return localStorage.getItem("hawkoffer_refresh_token");
+}
+
+export function setRefreshToken(token: string | null): void {
+  if (token && token.trim()) {
+    localStorage.setItem("hawkoffer_refresh_token", token.trim());
+  } else {
+    localStorage.removeItem("hawkoffer_refresh_token");
+  }
+}
+
+export function clearTokens(): void {
+  localStorage.removeItem("hawkoffer_access_token");
+  localStorage.removeItem("hawkoffer_refresh_token");
+}
+
+async function request<T>(path: string, options: RequestInit = {}, isRetry = false): Promise<T> {
   const baseUrl = getApiBaseUrl();
   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 
@@ -114,6 +131,40 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       `Cannot connect to HawkOffer backend at ${baseUrl}. Ensure daemon is running on 127.0.0.1:8765.`,
       err
     );
+  }
+
+  // Transparent token refresh on 401 Unauthorized for authenticated endpoints
+  if (
+    res.status === 401 &&
+    !isRetry &&
+    !path.includes("/auth/login") &&
+    !path.includes("/auth/register") &&
+    !path.includes("/auth/refresh")
+  ) {
+    const refreshToken = getRefreshToken();
+    if (refreshToken) {
+      try {
+        const refreshRes = await fetch(`${baseUrl}/auth/refresh`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (refreshRes.ok) {
+          const tokenData = await refreshRes.json();
+          setAuthToken(tokenData.access_token);
+          setRefreshToken(tokenData.refresh_token);
+          headers["Authorization"] = `Bearer ${tokenData.access_token}`;
+          return request<T>(path, { ...options, headers }, true);
+        } else {
+          clearTokens();
+        }
+      } catch {
+        clearTokens();
+      }
+    }
   }
 
   if (!res.ok) {

@@ -58,6 +58,8 @@ export interface CompanyRead {
   career_url: string;
   platform: CompanyPlatform | string;
   is_active: boolean;
+  is_curated?: boolean;
+  created_by_user_id?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -284,6 +286,7 @@ export interface PauseResumeRequest {
 export interface UserRead {
   id: number;
   email: string;
+  full_name?: string | null;
   role: "user" | "admin" | string;
   is_active: boolean;
   is_verified: boolean;
@@ -294,6 +297,7 @@ export interface UserRead {
 export interface UserRegisterRequest {
   email: string;
   password: string;
+  full_name?: string | null;
 }
 
 export interface UserLoginRequest {
@@ -306,6 +310,7 @@ export interface TokenResponse {
   refresh_token: string;
   token_type: string;
   expires_in: number;
+  user?: UserRead;
 }
 
 export interface TokenRefreshRequest {
@@ -327,6 +332,7 @@ export interface ApplicationRead {
   applied_at: string | null;
   created_at: string;
   updated_at: string;
+  job?: JobRead | null;
 }
 
 export interface ApplicationCreate {

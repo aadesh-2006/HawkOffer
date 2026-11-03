@@ -9,10 +9,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Cpu,
+  Bookmark,
+  Check,
+  Calendar,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
-import { JobRead, CompanyRead, JobMatchDetail } from "../../types/api";
-import { jobsApi, companiesApi } from "../../services/api";
+import { useAuth } from "../../context/AuthContext";
+import { JobRead, CompanyRead, JobMatchDetail, ApplicationRead, ApplicationStatus } from "../../types/api";
+import { jobsApi, companiesApi, applicationsApi } from "../../services/api";
 import { Modal } from "../common/Modal";
 import { Badge } from "../common/Badge";
 import { Button } from "../common/Button";
@@ -20,17 +24,26 @@ import { LoadingSpinner } from "../common/LoadingSpinner";
 
 export const JobDetailModal: React.FC = () => {
   const { selectedJobId, setSelectedJobId, showToast } = useApp();
+  const { isAuthenticated, openAuthModal } = useAuth();
+
   const [job, setJob] = useState<JobRead | null>(null);
   const [company, setCompany] = useState<CompanyRead | null>(null);
   const [matchDetail, setMatchDetail] = useState<JobMatchDetail | null>(null);
+  const [application, setApplication] = useState<ApplicationRead | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Quick Tracking State
+  const [isTracking, setIsTracking] = useState<boolean>(false);
+  const [selectedStatus, setSelectedStatus] = useState<ApplicationStatus>("SAVED");
+  const [appNotes, setAppNotes] = useState<string>("");
 
   useEffect(() => {
     if (!selectedJobId) {
       setJob(null);
       setCompany(null);
       setMatchDetail(null);
+      setApplication(null);
       setError(null);
       return;
     }
@@ -66,6 +79,23 @@ export const JobDetailModal: React.FC = () => {
             setMatchDetail(null);
           }
         }
+
+        // Check if already tracked in applications
+        if (isAuthenticated) {
+          try {
+            const apps = await applicationsApi.list();
+            const found = apps.find((a) => a.job_id === selectedJobId);
+            if (isMounted) {
+              setApplication(found || null);
+              if (found) {
+                setSelectedStatus(found.status as ApplicationStatus);
+                setAppNotes(found.notes || "");
+              }
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
       } catch (err: unknown) {
         if (!isMounted) return;
         const msg = err instanceof Error ? err.message : "Failed to load job details";
@@ -83,10 +113,45 @@ export const JobDetailModal: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [selectedJobId, showToast]);
+  }, [selectedJobId, isAuthenticated, showToast]);
 
   const handleClose = () => {
     setSelectedJobId(null);
+  };
+
+  const handleTrackOrSave = async (status: ApplicationStatus = "SAVED") => {
+    if (!isAuthenticated) {
+      openAuthModal("login");
+      return;
+    }
+    if (!job) return;
+
+    setIsTracking(true);
+    try {
+      if (application) {
+        // Update existing application
+        const updated = await applicationsApi.update(application.id, {
+          status: status,
+          notes: appNotes.trim() || null,
+        });
+        setApplication(updated);
+        showToast(`Application updated to ${status}`, "success");
+      } else {
+        // Create new application
+        const created = await applicationsApi.create({
+          job_id: job.id,
+          status: status,
+          notes: appNotes.trim() || null,
+        });
+        setApplication(created);
+        showToast("Job saved to your Application Tracker!", "success");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update tracker";
+      showToast(msg, "error");
+    } finally {
+      setIsTracking(false);
+    }
   };
 
   const getStatusVariant = (status: string) => {
@@ -106,52 +171,39 @@ export const JobDetailModal: React.FC = () => {
     <Modal
       isOpen={selectedJobId !== null}
       onClose={handleClose}
-      title={job ? job.title : "Job Details"}
-      size="xl"
+      title={job?.title || "Job Details"}
+      size="lg"
     >
-      {isLoading && (
+      {isLoading ? (
         <div className="py-16">
-          <LoadingSpinner size="lg" label="Loading job details..." />
+          <LoadingSpinner size="lg" label="Loading opportunity details..." />
         </div>
-      )}
-
-      {error && !isLoading && (
-        <div className="p-4 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 rounded-lg text-sm border border-rose-200 dark:border-rose-800">
-          {error}
+      ) : error || !job ? (
+        <div className="py-8 text-center space-y-3">
+          <p className="text-sm text-rose-600 dark:text-rose-400">
+            {error || "Could not load job details."}
+          </p>
+          <Button variant="secondary" onClick={handleClose}>
+            Close
+          </Button>
         </div>
-      )}
-
-      {job && !isLoading && (
-        <div className="space-y-6">
-          {/* Header Summary */}
-          <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant={getStatusVariant(job.status)} size="md">
-                  {job.status}
-                </Badge>
-                {job.job_type && (
-                  <Badge variant="brand" size="md">
-                    {job.job_type}
-                  </Badge>
-                )}
-                {job.employment_type && (
-                  <Badge variant="neutral" size="md">
-                    {job.employment_type}
-                  </Badge>
-                )}
-                {job.graduation_year && (
-                  <Badge variant="warning" size="md">
-                    Class of {job.graduation_year}
-                  </Badge>
+      ) : (
+        <div className="space-y-6" data-testid="job-detail-content">
+          {/* Header Metadata Banner */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-slate-400" />
+                <span className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+                  {company?.name || `Company ID: ${job.company_id}`}
+                </span>
+                {company?.is_curated && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.2 bg-teal-50 dark:bg-teal-950 text-teal-700 dark:text-teal-300 rounded border border-teal-200 dark:border-teal-800">
+                    Curated
+                  </span>
                 )}
               </div>
-
-              <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
-                <span className="flex items-center gap-1 font-medium text-slate-700 dark:text-slate-300">
-                  <Building2 className="w-3.5 h-3.5" />
-                  {company ? company.name : `Company #${job.company_id}`}
-                </span>
+              <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
                 {job.location && (
                   <span className="flex items-center gap-1">
                     <MapPin className="w-3.5 h-3.5" />
@@ -167,47 +219,89 @@ export const JobDetailModal: React.FC = () => {
               </div>
             </div>
 
-            {/* Direct External Application Link */}
-            {job.application_url && (
-              <a
-                href={job.application_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex"
+            {/* Application Tracker & Apply CTA */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                variant={application ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => handleTrackOrSave(application ? (selectedStatus as ApplicationStatus) : "SAVED")}
+                isLoading={isTracking}
+                className="text-xs"
+                data-testid="track-job-btn"
               >
-                <Button variant="primary" rightIcon={<ExternalLink className="w-4 h-4" />}>
-                  Apply Now
-                </Button>
-              </a>
-            )}
+                {application ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 mr-1 text-teal-600" />
+                    Stage: {application.status}
+                  </>
+                ) : (
+                  <>
+                    <Bookmark className="w-3.5 h-3.5 mr-1" />
+                    Track Job
+                  </>
+                )}
+              </Button>
+
+              {job.application_url && (
+                <a
+                  href={job.application_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="btn-apply-job"
+                >
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    rightIcon={<ExternalLink className="w-3.5 h-3.5" />}
+                  >
+                    Apply Now
+                  </Button>
+                </a>
+              )}
+            </div>
           </div>
 
-          {/* Key Metadata Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-lg text-xs">
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block font-medium">External ID</span>
-              <span className="font-mono text-slate-900 dark:text-slate-200 truncate block">
-                {job.external_id || "—"}
-              </span>
+          {/* Application Tracking Pipeline Bar */}
+          {isAuthenticated && (
+            <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <Bookmark className="w-4 h-4 text-teal-600" />
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  Application Stage:
+                </span>
+                <select
+                  value={application ? application.status : selectedStatus}
+                  onChange={(e) => handleTrackOrSave(e.target.value as ApplicationStatus)}
+                  className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 font-semibold text-slate-800 dark:text-slate-200 focus:outline-none"
+                  data-testid="job-modal-status-select"
+                >
+                  <option value="SAVED">Saved</option>
+                  <option value="APPLIED">Applied</option>
+                  <option value="INTERVIEWING">Interviewing</option>
+                  <option value="OFFER">Offer</option>
+                  <option value="REJECTED">Rejected</option>
+                </select>
+              </div>
+
+              {application?.applied_at && (
+                <span className="text-slate-400 text-[11px] flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5" />
+                  Applied: {new Date(application.applied_at).toLocaleDateString()}
+                </span>
+              )}
             </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block font-medium">Job Type</span>
-              <span className="text-slate-900 dark:text-slate-200 font-medium">
-                {job.job_type || "Standard"}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block font-medium">First Seen</span>
-              <span className="text-slate-900 dark:text-slate-200">
-                {new Date(job.first_seen_at).toLocaleDateString()}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block font-medium">Last Verified</span>
-              <span className="text-slate-900 dark:text-slate-200">
-                {new Date(job.last_seen_at).toLocaleDateString()}
-              </span>
-            </div>
+          )}
+
+          {/* Badges Strip */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant={getStatusVariant(job.status)}>{job.status}</Badge>
+            {job.job_type && <Badge variant="brand">{job.job_type}</Badge>}
+            {job.employment_type && (
+              <Badge variant="neutral">{job.employment_type}</Badge>
+            )}
+            {job.graduation_year && (
+              <Badge variant="warning">Class of {job.graduation_year}</Badge>
+            )}
           </div>
 
           {/* AI Semantic Fit & Relevance Analysis */}

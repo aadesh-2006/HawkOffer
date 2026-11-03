@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Building2,
   Plus,
@@ -6,8 +6,14 @@ import {
   ExternalLink,
   Edit2,
   Trash2,
+  Check,
+  Search,
+  ShieldCheck,
+  Heart,
+  Globe,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
+import { useAuth } from "../../context/AuthContext";
 import {
   CompanyRead,
   CompanyCreate,
@@ -15,7 +21,7 @@ import {
   CompanyPlatform,
   ScanStateRead,
 } from "../../types/api";
-import { companiesApi } from "../../services/api";
+import { companiesApi, subscriptionsApi } from "../../services/api";
 import { Badge } from "../common/Badge";
 import { Button } from "../common/Button";
 import { Modal } from "../common/Modal";
@@ -32,11 +38,18 @@ const PLATFORMS: { value: CompanyPlatform; label: string }[] = [
 
 export const CompaniesScreen: React.FC = () => {
   const { showToast, refreshAll } = useApp();
+  const { isAuthenticated, openAuthModal } = useAuth();
 
   const [companies, setCompanies] = useState<CompanyRead[]>([]);
+  const [subscribedIds, setSubscribedIds] = useState<Set<number>>(new Set());
   const [scanStates, setScanStates] = useState<Record<number, ScanStateRead>>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [scanningCompanyId, setScanningCompanyId] = useState<number | null>(null);
+  const [subscribingId, setSubscribingId] = useState<number | null>(null);
+
+  // Tab & Search state
+  const [activeCatalogTab, setActiveCatalogTab] = useState<"curated" | "following" | "all">("curated");
+  const [searchTerm, setSearchTerm] = useState<string>("");
 
   // Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
@@ -54,36 +67,85 @@ export const CompaniesScreen: React.FC = () => {
   const fetchCompanies = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await companiesApi.list();
-      setCompanies(res.items);
+      const [compRes, subRes] = await Promise.allSettled([
+        companiesApi.list(),
+        isAuthenticated ? subscriptionsApi.list() : Promise.resolve([]),
+      ]);
 
-      // Load scan states asynchronously
-      const statePromises = res.items.map(async (c) => {
-        try {
-          const s = await companiesApi.getScanState(c.id);
-          return { id: c.id, state: s };
-        } catch {
-          return null;
-        }
-      });
+      if (compRes.status === "fulfilled") {
+        setCompanies(compRes.value.items);
 
-      const resolved = await Promise.all(statePromises);
-      const stateMap: Record<number, ScanStateRead> = {};
-      resolved.forEach((item) => {
-        if (item) stateMap[item.id] = item.state;
-      });
-      setScanStates(stateMap);
+        // Load scan states asynchronously
+        const statePromises = compRes.value.items.map(async (c) => {
+          try {
+            const s = await companiesApi.getScanState(c.id);
+            return { id: c.id, state: s };
+          } catch {
+            return null;
+          }
+        });
+
+        const resolved = await Promise.all(statePromises);
+        const stateMap: Record<number, ScanStateRead> = {};
+        resolved.forEach((item) => {
+          if (item) stateMap[item.id] = item.state;
+        });
+        setScanStates(stateMap);
+      }
+
+      if (subRes.status === "fulfilled" && Array.isArray(subRes.value)) {
+        const idSet = new Set<number>(subRes.value.map((s) => s.company_id));
+        setSubscribedIds(idSet);
+      } else {
+        setSubscribedIds(new Set());
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load companies";
       showToast(msg, "error");
     } finally {
       setIsLoading(false);
     }
-  }, [showToast]);
+  }, [isAuthenticated, showToast]);
 
   useEffect(() => {
     fetchCompanies();
   }, [fetchCompanies]);
+
+  // Handle Follow / Unfollow toggle
+  const handleToggleFollow = async (company: CompanyRead) => {
+    if (!isAuthenticated) {
+      openAuthModal("login");
+      return;
+    }
+
+    const isCurrentlyFollowed = subscribedIds.has(company.id);
+    setSubscribingId(company.id);
+
+    try {
+      if (isCurrentlyFollowed) {
+        await subscriptionsApi.unsubscribe(company.id);
+        setSubscribedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(company.id);
+          return next;
+        });
+        showToast(`Unfollowed ${company.name}`, "info");
+      } else {
+        await subscriptionsApi.subscribe({ company_id: company.id });
+        setSubscribedIds((prev) => {
+          const next = new Set(prev);
+          next.add(company.id);
+          return next;
+        });
+        showToast(`Now following ${company.name}! Background monitoring active.`, "success");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Subscription update failed";
+      showToast(msg, "error");
+    } finally {
+      setSubscribingId(null);
+    }
+  };
 
   const openAddModal = () => {
     setFormName("");
@@ -119,8 +181,19 @@ export const CompaniesScreen: React.FC = () => {
         platform: formPlatform,
         is_active: formIsActive,
       };
-      await companiesApi.create(payload);
+      const created = await companiesApi.create(payload);
       showToast(`Company "${payload.name}" added successfully.`, "success");
+
+      // If user is authenticated, automatically follow the custom company
+      if (isAuthenticated) {
+        try {
+          await subscriptionsApi.subscribe({ company_id: created.id });
+          setSubscribedIds((prev) => new Set(prev).add(created.id));
+        } catch {
+          // Non-fatal
+        }
+      }
+
       setIsAddModalOpen(false);
       await fetchCompanies();
       await refreshAll();
@@ -150,10 +223,9 @@ export const CompaniesScreen: React.FC = () => {
         is_active: formIsActive,
       };
       await companiesApi.update(editingCompany.id, payload);
-      showToast(`Company "${payload.name}" updated.`, "success");
+      showToast(`Updated "${editingCompany.name}" successfully.`, "success");
       setEditingCompany(null);
       await fetchCompanies();
-      await refreshAll();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to update company";
       setFormError(msg);
@@ -162,12 +234,32 @@ export const CompaniesScreen: React.FC = () => {
     }
   };
 
+  const handleTriggerScan = async (companyId: number, companyName: string) => {
+    setScanningCompanyId(companyId);
+    try {
+      const res = await companiesApi.triggerScan(companyId);
+      const inserted = res.stats?.newly_inserted ?? 0;
+      const total = res.stats?.total_fetched ?? 0;
+      showToast(
+        `Scanned ${companyName}: found ${total} jobs (${inserted} new).`,
+        "success"
+      );
+      await fetchCompanies();
+      await refreshAll();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Scan failed";
+      showToast(msg, "error");
+    } finally {
+      setScanningCompanyId(null);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deletingCompany) return;
     setFormSubmitting(true);
     try {
       await companiesApi.delete(deletingCompany.id);
-      showToast(`Company "${deletingCompany.name}" deleted.`, "info");
+      showToast(`Deleted "${deletingCompany.name}".`, "info");
       setDeletingCompany(null);
       await fetchCompanies();
       await refreshAll();
@@ -179,239 +271,263 @@ export const CompaniesScreen: React.FC = () => {
     }
   };
 
-  const handleToggleActive = async (company: CompanyRead) => {
-    try {
-      await companiesApi.update(company.id, { is_active: !company.is_active });
-      showToast(
-        `"${company.name}" ${!company.is_active ? "activated" : "deactivated"}.`,
-        "info"
-      );
-      await fetchCompanies();
-      await refreshAll();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to toggle status";
-      showToast(msg, "error");
-    }
-  };
+  // Filtered companies based on tabs and search
+  const filteredCompanies = useMemo(() => {
+    let list = companies;
 
-  const handleTriggerScan = async (company: CompanyRead) => {
-    setScanningCompanyId(company.id);
-    try {
-      const res = await companiesApi.triggerScan(company.id);
-      const fetched = res.stats?.total_fetched ?? 0;
-      const inserted = res.stats?.newly_inserted ?? 0;
-      showToast(
-        `Scan for "${company.name}" completed: fetched ${fetched}, inserted ${inserted} jobs.`,
-        "success"
-      );
-      await fetchCompanies();
-      await refreshAll();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Career scan failed";
-      showToast(msg, "error");
-    } finally {
-      setScanningCompanyId(null);
+    // Filter by tab
+    if (activeCatalogTab === "curated") {
+      list = list.filter((c) => c.is_curated);
+      // Fallback if none are curated yet in db
+      if (list.length === 0) list = companies;
+    } else if (activeCatalogTab === "following") {
+      list = list.filter((c) => subscribedIds.has(c.id));
     }
-  };
 
-  const getScanStateBadge = (state: string | undefined) => {
-    switch (state) {
-      case "RUNNING":
-        return <Badge variant="brand" size="sm">RUNNING</Badge>;
-      case "FAILED":
-        return <Badge variant="danger" size="sm">FAILED</Badge>;
-      case "RATE_LIMITED":
-        return <Badge variant="warning" size="sm">RATE LIMITED</Badge>;
-      case "IDLE":
-      default:
-        return <Badge variant="neutral" size="sm">{state || "IDLE"}</Badge>;
+    // Filter by search term
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      list = list.filter(
+        (c) =>
+          c.name.toLowerCase().includes(term) ||
+          c.platform.toLowerCase().includes(term) ||
+          c.career_url.toLowerCase().includes(term)
+      );
     }
-  };
+
+    return list;
+  }, [companies, activeCatalogTab, subscribedIds, searchTerm]);
 
   return (
-    <div className="space-y-6">
-      {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
-        <div>
-          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-            <Building2 className="w-5 h-5 text-teal-600 dark:text-teal-400" />
-            Monitored Career Sites
-          </h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            {companies.length} configured targets. Scheduled scans run automatically through APScheduler.
-          </p>
+    <div className="space-y-6" data-testid="companies-screen">
+      {/* Top Catalog & Filter Bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+        {/* Tabs: Curated Directory, Following, All */}
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+          <button
+            onClick={() => setActiveCatalogTab("curated")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              activeCatalogTab === "curated"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-curated-companies"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-teal-600" />
+            Curated Catalog
+          </button>
+          <button
+            onClick={() => setActiveCatalogTab("following")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              activeCatalogTab === "following"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-following-companies"
+          >
+            <Heart className="w-3.5 h-3.5 text-rose-500" />
+            Followed ({subscribedIds.size})
+          </button>
+          <button
+            onClick={() => setActiveCatalogTab("all")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              activeCatalogTab === "all"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-all-companies"
+          >
+            <Globe className="w-3.5 h-3.5 text-slate-500" />
+            All Companies ({companies.length})
+          </button>
         </div>
 
-        <Button
-          variant="primary"
-          onClick={openAddModal}
-          leftIcon={<Plus className="w-4 h-4" />}
-          data-testid="btn-add-company"
-        >
-          Add Company
-        </Button>
-      </div>
-
-      {/* Companies Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
-        {isLoading ? (
-          <div className="py-20">
-            <LoadingSpinner size="lg" label="Loading monitored companies..." />
-          </div>
-        ) : companies.length === 0 ? (
-          <div className="py-16">
-            <EmptyState
-              title="No companies configured"
-              description="Add your first company career site to start automated job discovery."
-              actionLabel="Add Company"
-              onAction={openAddModal}
+        {/* Search & Add Target */}
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Filter companies..."
+              className="pl-9 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 w-48 sm:w-56"
             />
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm" data-testid="companies-table">
-              <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                <tr>
-                  <th className="py-3 px-4">Company</th>
-                  <th className="py-3 px-4">Platform</th>
-                  <th className="py-3 px-4">Monitoring</th>
-                  <th className="py-3 px-4">Scan State</th>
-                  <th className="py-3 px-4">Last Scanned</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {companies.map((company) => {
-                  const isScanning = scanningCompanyId === company.id;
-                  const state = scanStates[company.id];
 
-                  return (
-                    <tr
-                      key={company.id}
-                      className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
-                      data-testid={`company-row-${company.id}`}
-                    >
-                      <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                          <span>{company.name}</span>
-                          <a
-                            href={company.career_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-slate-400 hover:text-teal-600 dark:hover:text-teal-400"
-                            title={company.career_url}
-                          >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                        <div className="text-xs text-slate-500 font-mono truncate max-w-xs mt-0.5">
-                          {company.career_url}
-                        </div>
-                      </td>
-
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <Badge variant="brand" size="sm">
-                          {company.platform.toUpperCase()}
-                        </Badge>
-                      </td>
-
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <button
-                          onClick={() => handleToggleActive(company)}
-                          className="flex items-center gap-1.5 focus:outline-hidden"
-                          title="Click to toggle monitoring status"
-                        >
-                          {company.is_active ? (
-                            <Badge variant="success" size="sm">
-                              ACTIVE
-                            </Badge>
-                          ) : (
-                            <Badge variant="neutral" size="sm">
-                              PAUSED
-                            </Badge>
-                          )}
-                        </button>
-                      </td>
-
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className="space-y-1">
-                          {getScanStateBadge(state?.status)}
-                          {state?.last_error && (
-                            <div
-                              className="text-[11px] text-rose-500 dark:text-rose-400 truncate max-w-xs"
-                              title={state.last_error}
-                            >
-                              {state.last_error}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-
-                      <td className="py-3.5 px-4 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                        {state?.last_scan_completed_at ? (
-                          <div>
-                            <div>{new Date(state.last_scan_completed_at).toLocaleDateString()}</div>
-                            <div className="text-[11px] text-slate-400">
-                              {new Date(state.last_scan_completed_at).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="italic text-slate-400">Never</span>
-                        )}
-                      </td>
-
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => handleTriggerScan(company)}
-                            isLoading={isScanning}
-                            leftIcon={<Play className="w-3 h-3" />}
-                            title="Trigger immediate scrape and ingestion"
-                            data-testid={`btn-scan-company-${company.id}`}
-                          >
-                            Scan Now
-                          </Button>
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openEditModal(company)}
-                            title="Edit company"
-                            data-testid={`btn-edit-company-${company.id}`}
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-slate-500" />
-                          </Button>
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setDeletingCompany(company)}
-                            title="Delete company"
-                            data-testid={`btn-delete-company-${company.id}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+          <Button variant="primary" size="sm" onClick={openAddModal} data-testid="btn-add-company">
+            <Plus className="w-4 h-4 mr-1.5" />
+            Add Target
+          </Button>
+        </div>
       </div>
 
-      {/* Add Company Modal */}
+      {/* Main Companies Grid */}
+      {isLoading ? (
+        <div className="py-20 flex justify-center">
+          <LoadingSpinner size="lg" label="Loading companies..." />
+        </div>
+      ) : filteredCompanies.length === 0 ? (
+        <EmptyState
+          icon={<Building2 className="w-8 h-8 text-teal-600" />}
+          title={
+            activeCatalogTab === "following"
+              ? "No followed companies yet"
+              : "No companies found"
+          }
+          description={
+            activeCatalogTab === "following"
+              ? "Follow curated companies from the catalog to start monitoring their career portals for matching openings."
+              : "No companies match your current search criteria. Try a different search term or add a new target."
+          }
+          action={
+            activeCatalogTab === "following" ? (
+              <Button variant="primary" onClick={() => setActiveCatalogTab("curated")}>
+                Browse Curated Catalog
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={openAddModal}>
+                Add Monitored Company
+              </Button>
+            )
+          }
+        />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredCompanies.map((company) => {
+            const scan = scanStates[company.id];
+            const isScanning = scanningCompanyId === company.id;
+            const isFollowed = subscribedIds.has(company.id);
+            const isFollowLoading = subscribingId === company.id;
+
+            return (
+              <div
+                key={company.id}
+                className={`bg-white dark:bg-slate-900 border rounded-xl p-5 shadow-xs space-y-4 transition-all ${
+                  isFollowed
+                    ? "border-teal-500/50 ring-1 ring-teal-500/20"
+                    : "border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+                }`}
+                data-testid={`company-card-${company.id}`}
+              >
+                {/* Header: Name, Badges & Follow Button */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+                        {company.name}
+                      </h3>
+                      {company.is_curated && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border border-teal-200 dark:border-teal-800 flex items-center gap-1">
+                          <ShieldCheck className="w-3 h-3 text-teal-600" />
+                          Curated
+                        </span>
+                      )}
+                    </div>
+                    <Badge variant="neutral" size="sm">
+                      {company.platform.toUpperCase()}
+                    </Badge>
+                  </div>
+
+                  {/* Follow / Unfollow Button */}
+                  <Button
+                    variant={isFollowed ? "secondary" : "primary"}
+                    size="sm"
+                    onClick={() => handleToggleFollow(company)}
+                    isLoading={isFollowLoading}
+                    className="text-xs"
+                    data-testid={`follow-company-btn-${company.id}`}
+                  >
+                    {isFollowed ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 mr-1 text-teal-600" />
+                        Following
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5 mr-1" />
+                        Follow
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Career Portal URL */}
+                <div className="text-xs">
+                  <span className="text-slate-400 block mb-0.5 font-medium">Career Portal:</span>
+                  <a
+                    href={company.career_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-teal-600 dark:text-teal-400 hover:underline flex items-center gap-1 truncate"
+                  >
+                    <span className="truncate">{company.career_url}</span>
+                    <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                  </a>
+                </div>
+
+                {/* Scan Status Summary */}
+                <div className="p-2.5 bg-slate-50 dark:bg-slate-950/50 rounded-lg text-xs space-y-1 border border-slate-100 dark:border-slate-800/80">
+                  <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+                    <span>Scan Status:</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-200">
+                      {scan?.status || (company.is_active ? "READY" : "INACTIVE")}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+                    <span>Last Scan:</span>
+                    <span>
+                      {scan?.last_scan_completed_at
+                        ? new Date(scan.last_scan_completed_at).toLocaleDateString()
+                        : "Never"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Card Footer Actions */}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleTriggerScan(company.id, company.name)}
+                    isLoading={isScanning}
+                    className="text-xs"
+                    data-testid={`btn-scan-company-${company.id}`}
+                  >
+                    <Play className="w-3.5 h-3.5 mr-1" />
+                    Scan Now
+                  </Button>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => openEditModal(company)}
+                      className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded"
+                      title="Edit Company"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    {!company.is_curated && (
+                      <button
+                        onClick={() => setDeletingCompany(company)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded"
+                        title="Delete Company"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add Target Modal */}
       <Modal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        title="Add Monitored Company"
+        title="Add Company Career Target"
         size="md"
       >
         <form onSubmit={handleAddSubmit} className="space-y-4">
@@ -431,7 +547,7 @@ export const CompaniesScreen: React.FC = () => {
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
               placeholder="e.g. Stripe, OpenAI, Figma"
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
               data-testid="input-company-name"
             />
           </div>
@@ -446,7 +562,7 @@ export const CompaniesScreen: React.FC = () => {
               value={formUrl}
               onChange={(e) => setFormUrl(e.target.value)}
               placeholder="https://boards.greenhouse.io/stripe"
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
               data-testid="input-company-url"
             />
           </div>
@@ -458,7 +574,7 @@ export const CompaniesScreen: React.FC = () => {
             <select
               value={formPlatform}
               onChange={(e) => setFormPlatform(e.target.value as CompanyPlatform)}
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
               data-testid="select-company-platform"
             >
               {PLATFORMS.map((p) => (
@@ -481,7 +597,7 @@ export const CompaniesScreen: React.FC = () => {
               htmlFor="is_active_checkbox"
               className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
             >
-              Enable automated monitoring immediately
+              Active for scheduled background monitoring
             </label>
           </div>
 
@@ -499,139 +615,139 @@ export const CompaniesScreen: React.FC = () => {
               isLoading={formSubmitting}
               data-testid="btn-save-company"
             >
-              Save Company
+              Save &amp; Follow Company
             </Button>
           </div>
         </form>
       </Modal>
 
       {/* Edit Company Modal */}
-      <Modal
-        isOpen={editingCompany !== null}
-        onClose={() => setEditingCompany(null)}
-        title={`Edit ${editingCompany?.name || "Company"}`}
-        size="md"
-      >
-        <form onSubmit={handleEditSubmit} className="space-y-4">
-          {formError && (
-            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs rounded-lg border border-rose-200 dark:border-rose-800">
-              {formError}
+      {editingCompany && (
+        <Modal
+          isOpen={true}
+          onClose={() => setEditingCompany(null)}
+          title={`Edit ${editingCompany.name}`}
+          size="md"
+        >
+          <form onSubmit={handleEditSubmit} className="space-y-4">
+            {formError && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs rounded-lg border border-rose-200 dark:border-rose-800">
+                {formError}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Company Name *
+              </label>
+              <input
+                type="text"
+                required
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
             </div>
-          )}
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              Company Name *
-            </label>
-            <input
-              type="text"
-              required
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
-            />
-          </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Career Site URL *
+              </label>
+              <input
+                type="url"
+                required
+                value={formUrl}
+                onChange={(e) => setFormUrl(e.target.value)}
+                className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              Career Site URL *
-            </label>
-            <input
-              type="url"
-              required
-              value={formUrl}
-              onChange={(e) => setFormUrl(e.target.value)}
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
-            />
-          </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                ATS Platform *
+              </label>
+              <select
+                value={formPlatform}
+                onChange={(e) => setFormPlatform(e.target.value as CompanyPlatform)}
+                className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              >
+                {PLATFORMS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              ATS Platform *
-            </label>
-            <select
-              value={formPlatform}
-              onChange={(e) => setFormPlatform(e.target.value as CompanyPlatform)}
-              className="w-full text-sm px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
-            >
-              {PLATFORMS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div className="flex items-center gap-2 pt-2">
+              <input
+                type="checkbox"
+                id="edit_is_active_checkbox"
+                checked={formIsActive}
+                onChange={(e) => setFormIsActive(e.target.checked)}
+                className="rounded text-teal-600 focus:ring-teal-500 h-4 w-4 border-slate-300 dark:border-slate-700"
+              />
+              <label
+                htmlFor="edit_is_active_checkbox"
+                className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+              >
+                Active for scheduled monitoring
+              </label>
+            </div>
 
-          <div className="flex items-center gap-2 pt-2">
-            <input
-              type="checkbox"
-              id="edit_is_active_checkbox"
-              checked={formIsActive}
-              onChange={(e) => setFormIsActive(e.target.checked)}
-              className="rounded text-teal-600 focus:ring-teal-500 h-4 w-4 border-slate-300 dark:border-slate-700"
-            />
-            <label
-              htmlFor="edit_is_active_checkbox"
-              className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
-            >
-              Active for automated scheduler monitoring
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setEditingCompany(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              isLoading={formSubmitting}
-            >
-              Save Changes
-            </Button>
-          </div>
-        </form>
-      </Modal>
+            <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setEditingCompany(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" isLoading={formSubmitting}>
+                Save Changes
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* Delete Confirmation Modal */}
-      <Modal
-        isOpen={deletingCompany !== null}
-        onClose={() => setDeletingCompany(null)}
-        title="Confirm Deletion"
-        size="sm"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            Are you sure you want to delete{" "}
-            <strong className="text-slate-900 dark:text-slate-100">
-              {deletingCompany?.name}
-            </strong>
-            ? This will stop future monitoring of this career site.
-          </p>
+      {deletingCompany && (
+        <Modal
+          isOpen={true}
+          onClose={() => setDeletingCompany(null)}
+          title="Confirm Deletion"
+          size="sm"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Are you sure you want to delete{" "}
+              <strong className="text-slate-900 dark:text-slate-100">
+                {deletingCompany.name}
+              </strong>
+              ? This will stop future monitoring of this career site.
+            </p>
 
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <Button
-              variant="secondary"
-              onClick={() => setDeletingCompany(null)}
-              disabled={formSubmitting}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={handleDelete}
-              isLoading={formSubmitting}
-              data-testid="btn-confirm-delete-company"
-            >
-              Delete Company
-            </Button>
+            <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <Button
+                variant="secondary"
+                onClick={() => setDeletingCompany(null)}
+                disabled={formSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDelete}
+                isLoading={formSubmitting}
+                data-testid="btn-confirm-delete-company"
+              >
+                Delete Company
+              </Button>
+            </div>
           </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </div>
   );
 };

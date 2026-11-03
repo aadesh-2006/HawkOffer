@@ -101,6 +101,25 @@ vi.mock("../services/api", () => ({
   notificationsApi: {
     getUnreadCount: vi.fn().mockResolvedValue({ unread_count: 5 }),
   },
+  companiesApi: {
+    list: vi.fn().mockResolvedValue({
+      items: [{ id: 1, name: "Datadog", is_active: true }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    }),
+  },
+  subscriptionsApi: {
+    list: vi.fn().mockResolvedValue([]),
+    subscribe: vi.fn(),
+    unsubscribe: vi.fn(),
+  },
+  applicationsApi: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
 }));
 
 describe("DashboardScreen Component", () => {

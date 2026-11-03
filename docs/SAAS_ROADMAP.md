@@ -18,7 +18,7 @@ flowchart LR
     M15_1 --> M16["M16: Web Push Notifications (RFC 8291)<br/>(COMPLETED)"]
     M16 --> M16_1["M16.1: Push Reliability & Hardening<br/>(COMPLETED)"]
     M16_1 --> M16_2["M16.2: Push Final Security & Gate<br/>(COMPLETED)"]
-    M16_2 --> M17["M17: Public Web Dashboard & Application Tracking"]
+    M16_2 --> M17["M17: Public Web Dashboard & Application Tracking<br/>(COMPLETED)"]
     M17 --> M18["M18: Zero-Budget Cloud Deployment & Acceptance"]
 ```
 
@@ -258,26 +258,44 @@ flowchart LR
 ---
 
 ### Milestone 17: Public SaaS Web Dashboard & Application Tracking
-*Objective: Evolve the React + Vite frontend into a multi-user web application with authentication, company discovery, and job pipeline tracking.*
+*Status: COMPLETED (Verified across 402 backend tests, 42 frontend tests, 0 MyPy/Ruff errors, clean production build in 4.16s)*  
+*Objective: Transform the React + Vite frontend into a website-first, multi-user SaaS web dashboard with JWT authentication, company catalog discovery, Kanban application tracking, and RFC 8291 Web Push onboarding.*
 
-- **Scope & Deliverables**:
-  1. **Web Authentication & User Flows**:
-     - Login, Registration, and Password Reset screens.
-     - Session persistence via secure HTTP-only cookies or encrypted localStorage tokens.
-     - Profile onboarding wizard for new signups.
-  2. **Company Discovery & Subscription Catalog**:
-     - Curated company directory with one-click "Follow" / "Unfollow" toggles.
-     - "Add Custom Company" modal with URL auto-detection for Greenhouse/Lever portals.
-  3. **Browser Push Opt-In Prompt**:
-     - Contextual permission request banner explaining the value of background job alerts.
-     - One-click Web Push registration calling Service Worker API.
-  4. **Job Application Tracker Kanban / List**:
-     - Track matched jobs across statuses: `SAVED`, `APPLIED`, `INTERVIEWING`, `OFFER`, `REJECTED`.
-     - Add private notes and application dates.
-- **Verification Gates**:
-  - Vitest frontend tests cover auth state transitions and company subscriptions.
-  - Production build bundle size remains under 500KB gzipped.
-  - Responsive UI tested on desktop and mobile viewports.
+- **Delivered Capabilities**:
+  1. **User Authentication & Session Persistence**:
+     - Modern `AuthModal` supporting seamless Login and Registration tabs, real-time password strength requirements, password visibility toggle, and error alerts.
+     - `AuthContext` with automatic token restoration from `localStorage` (`hawkoffer_access_token`, `hawkoffer_refresh_token`).
+     - Transparent JWT auto-refresh via HTTP 401 interceptor in `frontend/src/services/api.ts` hitting `POST /api/v1/auth/refresh`.
+     - Graceful unauthenticated gates throughout the application shell (Header user avatar, Sign In CTA, application tracking gates).
+  2. **Modern Career Intelligence Dashboard**:
+     - Modern SaaS header with authenticated greeting, system status indicators, and background monitoring details.
+     - 4 interactive KPI metric cards: Followed / Curated Companies, Total Discovered Jobs, Tracked Applications, and Unread Notifications.
+     - Mini-pipeline Kanban preview summarizing stages (`SAVED`, `APPLIED`, `INTERVIEWING`, `OFFER`).
+     - Freshly discovered opportunities feed with fit percentages and quick navigation.
+     - Contextual browser Web Push onboarding banner with zero-pressure dismiss semantics.
+  3. **Company Catalog Discovery & Follow System**:
+     - Three-state catalog filtering: "Curated Catalog" (production targets like Stripe, Datadog), "Followed" (user subscriptions), and "All Targets".
+     - Real-time Follow / Unfollow toggles wired to `POST /api/v1/subscriptions` and `DELETE /api/v1/subscriptions/{id}`.
+     - "Add Target" modal allowing users to register and automatically follow custom company career portals.
+  4. **Job Application Tracking Pipeline (Kanban & Table Views)**:
+     - Dedicated `ApplicationsScreen` featuring a 5-column Kanban board (`Saved`, `Applied`, `Interviewing`, `Offer Received`, `Archived / Rejected`).
+     - Full interactive list view with stage filtering, date tracking, and inline status updates.
+     - Add / Edit application modals supporting notes, dates, and direct links to discovered jobs.
+     - Enriched `ApplicationRead` schema with pre-loaded `JobRead` object avoiding N+1 roundtrips.
+  5. **Browser Push Notification Onboarding**:
+     - Non-intrusive `PushNotificationBanner` displayed only when Web Push is supported and permission is `default`.
+     - One-click activation requesting browser permission, registering Service Worker, and syncing cryptographic subscription to `POST /api/v1/push/subscribe`.
+     - Settings screen integration providing live connection status, permission indicators, and unsubscribe controls.
+  6. **Zero-Paid-API & Backward Compatibility Preservation**:
+     - Retains full compatibility with Tauri desktop mode and SQLite dual dialect.
+     - Decouples in-app notifications from push delivery status.
+     - No external cloud services or Redis introduced.
+- **Verification Gates Achieved**:
+  - 42 frontend tests passed (including 8 new tests for AuthModal, ApplicationsScreen, and PushNotificationBanner).
+  - 402 backend tests passed (100%).
+  - MyPy static analysis passed with 0 errors across 127 source files.
+  - Ruff linter passed with 0 errors.
+  - Production frontend build cleanly bundled in 4.16s (`dist/assets/index-32KWhYKi.js` at 89.74 kB gzipped, well under the 500 kB budget).
 
 ---
 

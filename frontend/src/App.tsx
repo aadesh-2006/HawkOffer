@@ -1,12 +1,15 @@
 import React from "react";
 import { AppProvider, useApp } from "./context/AppContext";
+import { AuthProvider } from "./context/AuthContext";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Header } from "./components/layout/Header";
 import { ToastContainer } from "./components/layout/ToastContainer";
 import { JobDetailModal } from "./components/jobs/JobDetailModal";
+import { AuthModal } from "./components/auth/AuthModal";
 import { DashboardScreen } from "./components/dashboard/DashboardScreen";
 import { JobsFeedScreen } from "./components/jobs/JobsFeedScreen";
 import { CompaniesScreen } from "./components/companies/CompaniesScreen";
+import { ApplicationsScreen } from "./components/applications/ApplicationsScreen";
 import { ProfilesScreen } from "./components/profiles/ProfilesScreen";
 import { NotificationsScreen } from "./components/notifications/NotificationsScreen";
 import { MonitoringScreen } from "./components/monitoring/MonitoringScreen";
@@ -24,6 +27,8 @@ const AppContent: React.FC = () => {
         return <JobsFeedScreen />;
       case "companies":
         return <CompaniesScreen />;
+      case "applications":
+        return <ApplicationsScreen />;
       case "profiles":
         return <ProfilesScreen />;
       case "notifications":
@@ -56,6 +61,9 @@ const AppContent: React.FC = () => {
       {/* Global Job Detail Inspector Modal */}
       <JobDetailModal />
 
+      {/* Global Authentication Modal */}
+      <AuthModal />
+
       {/* Global Toast Notifications */}
       <ToastContainer />
     </div>
@@ -65,9 +73,11 @@ const AppContent: React.FC = () => {
 export const App: React.FC = () => {
   return (
     <AppProvider>
-      <BackendReadinessGate>
-        <AppContent />
-      </BackendReadinessGate>
+      <AuthProvider>
+        <BackendReadinessGate>
+          <AppContent />
+        </BackendReadinessGate>
+      </AuthProvider>
     </AppProvider>
   );
 };

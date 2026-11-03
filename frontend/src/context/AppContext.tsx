@@ -6,6 +6,7 @@ export type TabId =
   | "dashboard"
   | "jobs"
   | "companies"
+  | "applications"
   | "profiles"
   | "notifications"
   | "monitoring"

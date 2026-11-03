@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Search,
   MapPin,
@@ -8,10 +8,12 @@ import {
   Building2,
   X,
   Sparkles,
+  Bookmark,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
-import { JobRead, CompanyRead, JobFilterParams } from "../../types/api";
-import { jobsApi, companiesApi } from "../../services/api";
+import { useAuth } from "../../context/AuthContext";
+import { JobRead, CompanyRead, JobFilterParams, ApplicationRead } from "../../types/api";
+import { jobsApi, companiesApi, applicationsApi } from "../../services/api";
 import { Badge } from "../common/Badge";
 import { Button } from "../common/Button";
 import { LoadingSpinner } from "../common/LoadingSpinner";
@@ -19,13 +21,16 @@ import { EmptyState } from "../common/EmptyState";
 
 export const JobsFeedScreen: React.FC = () => {
   const { setSelectedJobId, showToast } = useApp();
+  const { isAuthenticated, openAuthModal } = useAuth();
 
   const [jobs, setJobs] = useState<JobRead[]>([]);
   const [companies, setCompanies] = useState<CompanyRead[]>([]);
+  const [trackedApplications, setTrackedApplications] = useState<ApplicationRead[]>([]);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Filters and pagination state
+  // Tab & Filters state
+  const [feedTab, setFeedTab] = useState<"all" | "matching" | "saved">("all");
   const [search, setSearch] = useState<string>("");
   const [debouncedSearch, setDebouncedSearch] = useState<string>("");
   const [companyId, setCompanyId] = useState<string>("");
@@ -34,6 +39,9 @@ export const JobsFeedScreen: React.FC = () => {
   const [gradYear, setGradYear] = useState<string>("");
   const [page, setPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(25);
+
+  // Quick save loading state
+  const [savingJobId, setSavingJobId] = useState<number | null>(null);
 
   // Debounce search input by 300ms
   useEffect(() => {
@@ -44,13 +52,28 @@ export const JobsFeedScreen: React.FC = () => {
     return () => clearTimeout(handler);
   }, [search]);
 
-  // Load companies for filter dropdown
+  // Load companies for filter dropdown and tracked applications
   useEffect(() => {
     companiesApi
       .list()
       .then((res) => setCompanies(res.items))
       .catch(() => {});
-  }, []);
+
+    if (isAuthenticated) {
+      applicationsApi
+        .list()
+        .then((apps) => setTrackedApplications(apps))
+        .catch(() => {});
+    } else {
+      setTrackedApplications([]);
+    }
+  }, [isAuthenticated]);
+
+  const trackedJobMap = useMemo(() => {
+    const map = new Map<number, ApplicationRead>();
+    trackedApplications.forEach((app) => map.set(app.job_id, app));
+    return map;
+  }, [trackedApplications]);
 
   const fetchJobs = useCallback(async () => {
     setIsLoading(true);
@@ -80,6 +103,36 @@ export const JobsFeedScreen: React.FC = () => {
     fetchJobs();
   }, [fetchJobs]);
 
+  const handleQuickSave = async (e: React.MouseEvent, job: JobRead) => {
+    e.stopPropagation();
+    if (!isAuthenticated) {
+      openAuthModal("login");
+      return;
+    }
+
+    const existing = trackedJobMap.get(job.id);
+    if (existing) {
+      // Already tracked; inspect details
+      setSelectedJobId(job.id);
+      return;
+    }
+
+    setSavingJobId(job.id);
+    try {
+      const created = await applicationsApi.create({
+        job_id: job.id,
+        status: "SAVED",
+      });
+      setTrackedApplications((prev) => [...prev, created]);
+      showToast(`Saved "${job.title}" to Application Tracker!`, "success");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save job";
+      showToast(msg, "error");
+    } finally {
+      setSavingJobId(null);
+    }
+  };
+
   const clearFilters = () => {
     setSearch("");
     setDebouncedSearch("");
@@ -95,16 +148,68 @@ export const JobsFeedScreen: React.FC = () => {
 
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
-  const companyMap = React.useMemo(() => {
+  const companyMap = useMemo(() => {
     const map = new Map<number, string>();
     companies.forEach((c) => map.set(c.id, c.name));
     return map;
   }, [companies]);
 
+  // Filter jobs based on active tab
+  const displayedJobs = useMemo(() => {
+    if (feedTab === "matching") {
+      return jobs.filter(
+        (j) => (j.semantic_score && j.semantic_score >= 50) || (j.match_tier && j.match_tier !== "INELIGIBLE")
+      );
+    }
+    if (feedTab === "saved") {
+      return jobs.filter((j) => trackedJobMap.has(j.id));
+    }
+    return jobs;
+  }, [jobs, feedTab, trackedJobMap]);
+
   return (
     <div className="space-y-6">
-      {/* Search and Filters Bar */}
+      {/* Top View Selector & Search / Filters Bar */}
       <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+        {/* Navigation Tabs: Matching, Saved, All */}
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700 w-fit">
+          <button
+            onClick={() => setFeedTab("all")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+              feedTab === "all"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-all-jobs"
+          >
+            All Discoveries
+          </button>
+          <button
+            onClick={() => setFeedTab("matching")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              feedTab === "matching"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-matching-jobs"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+            Top Matches
+          </button>
+          <button
+            onClick={() => setFeedTab("saved")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              feedTab === "saved"
+                ? "bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+            }`}
+            data-testid="tab-saved-jobs"
+          >
+            <Bookmark className="w-3.5 h-3.5 text-teal-600" />
+            Tracked in Pipeline ({trackedApplications.length})
+          </button>
+        </div>
+
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           {/* Search Input */}
           <div className="relative flex-1">
@@ -227,12 +332,20 @@ export const JobsFeedScreen: React.FC = () => {
           <div className="py-20">
             <LoadingSpinner size="lg" label="Loading jobs feed..." />
           </div>
-        ) : jobs.length === 0 ? (
+        ) : displayedJobs.length === 0 ? (
           <div className="py-16">
             <EmptyState
-              title={hasActiveFilters ? "No matching jobs found" : "No jobs discovered yet"}
+              title={
+                feedTab === "saved"
+                  ? "No saved or tracked jobs yet"
+                  : hasActiveFilters
+                  ? "No matching jobs found"
+                  : "No jobs discovered yet"
+              }
               description={
-                hasActiveFilters
+                feedTab === "saved"
+                  ? "Click the 'Save' button on any job card to track it through your application pipeline."
+                  : hasActiveFilters
                   ? "Try adjusting your search criteria or resetting filters."
                   : "Add companies to begin monitoring job openings."
               }
@@ -245,7 +358,7 @@ export const JobsFeedScreen: React.FC = () => {
             <table className="w-full text-left text-sm" data-testid="jobs-table">
               <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 <tr>
-                  <th className="py-3 px-4">Title &amp; Details</th>
+                  <th className="py-3 px-4">Title &amp; Fit</th>
                   <th className="py-3 px-4">Company</th>
                   <th className="py-3 px-4">Location</th>
                   <th className="py-3 px-4">Classification</th>
@@ -255,8 +368,10 @@ export const JobsFeedScreen: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {jobs.map((job) => {
+                {displayedJobs.map((job) => {
                   const companyName = companyMap.get(job.company_id) || `Company #${job.company_id}`;
+                  const trackedApp = trackedJobMap.get(job.id);
+                  const isSavingThis = savingJobId === job.id;
 
                   return (
                     <tr
@@ -277,6 +392,12 @@ export const JobsFeedScreen: React.FC = () => {
                             >
                               <Sparkles className="w-2.5 h-2.5 text-violet-500" />
                               {Math.round(job.semantic_score)}% fit
+                            </span>
+                          )}
+                          {trackedApp && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-50 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border border-teal-200 dark:border-teal-800">
+                              <Bookmark className="w-2.5 h-2.5 text-teal-600 fill-teal-600" />
+                              {trackedApp.status}
                             </span>
                           )}
                         </div>
@@ -337,7 +458,22 @@ export const JobsFeedScreen: React.FC = () => {
                       </td>
 
                       <td className="py-3.5 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* Quick Track / Bookmark Button */}
+                          <button
+                            onClick={(e) => handleQuickSave(e, job)}
+                            disabled={isSavingThis}
+                            className={`p-1.5 rounded transition-colors text-xs flex items-center gap-1 ${
+                              trackedApp
+                                ? "text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40"
+                                : "text-slate-400 hover:text-teal-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+                            }`}
+                            title={trackedApp ? `Tracked (${trackedApp.status})` : "Save / Track Application"}
+                            data-testid={`quick-save-btn-${job.id}`}
+                          >
+                            <Bookmark className={`w-3.5 h-3.5 ${trackedApp ? "fill-teal-600 text-teal-600" : ""}`} />
+                          </button>
+
                           <Button
                             variant="ghost"
                             size="sm"
@@ -346,6 +482,7 @@ export const JobsFeedScreen: React.FC = () => {
                           >
                             Details
                           </Button>
+
                           {job.application_url && (
                             <a
                               href={job.application_url}

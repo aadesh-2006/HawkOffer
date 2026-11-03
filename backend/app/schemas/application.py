@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.job import JobRead
+
 
 class ApplicationBase(BaseModel):
     """Base schema for job application status tracking."""
@@ -35,5 +37,6 @@ class ApplicationRead(ApplicationBase):
     job_id: int
     created_at: datetime
     updated_at: datetime
+    job: JobRead | None = None
 
     model_config = ConfigDict(from_attributes=True)

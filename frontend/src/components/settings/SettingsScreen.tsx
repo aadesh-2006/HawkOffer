@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Server,
   Database,
@@ -9,9 +9,16 @@ import {
   RotateCcw,
   Copy,
   Check,
+  Bell,
 } from "lucide-react";
 import { useApp, Theme } from "../../context/AppContext";
 import { getApiBaseUrl, setApiBaseUrl } from "../../services/api";
+import {
+  getPushStatus,
+  PushStatus,
+  subscribeToPush,
+  unsubscribeFromPush,
+} from "../../services/pushService";
 import { Button } from "../common/Button";
 import { Badge } from "../common/Badge";
 
@@ -29,6 +36,45 @@ export const SettingsScreen: React.FC = () => {
   const [baseUrlInput, setBaseUrlInput] = useState<string>(getApiBaseUrl());
   const [isTestingUrl, setIsTestingUrl] = useState<boolean>(false);
   const [copiedSnippet, setCopiedSnippet] = useState<boolean>(false);
+
+  // Push notifications settings state
+  const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  const [isPushLoading, setIsPushLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let mounted = true;
+    getPushStatus().then((s) => {
+      if (mounted) setPushStatus(s);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleTogglePush = async () => {
+    setIsPushLoading(true);
+    try {
+      if (pushStatus?.isSubscribed) {
+        const res = await unsubscribeFromPush();
+        if (res.success) {
+          showToast("Web Push notifications disabled", "info");
+        } else {
+          showToast(res.error || "Failed to disable notifications", "error");
+        }
+      } else {
+        const res = await subscribeToPush();
+        if (res.success) {
+          showToast("Web Push notifications enabled successfully!", "success");
+        } else {
+          showToast(res.error || "Failed to enable notifications", "error");
+        }
+      }
+      const s = await getPushStatus();
+      setPushStatus(s);
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
 
   const handleSaveBaseUrl = async () => {
     try {
@@ -225,6 +271,82 @@ export const SettingsScreen: React.FC = () => {
               </button>
             );
           })}
+        </div>
+      </div>
+
+      {/* Browser Web Push Notifications */}
+      <div
+        className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs"
+        data-testid="web-push-settings-card"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              <Bell className="w-5 h-5 text-teal-600 dark:text-teal-400" />
+              Browser Web Push Notifications
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Receive instant alerts when new matching jobs are discovered even when this tab is closed.
+            </p>
+          </div>
+
+          <Badge
+            variant={
+              pushStatus?.isSubscribed
+                ? "success"
+                : pushStatus?.permission === "denied"
+                ? "danger"
+                : "neutral"
+            }
+            size="sm"
+          >
+            {pushStatus?.isSubscribed
+              ? "ACTIVE"
+              : pushStatus?.permission === "denied"
+              ? "BLOCKED"
+              : "INACTIVE"}
+          </Badge>
+        </div>
+
+        <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-100 dark:border-slate-800 space-y-2 text-xs">
+          <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+            <span>Browser Web Push Support:</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-200">
+              {pushStatus?.supported ? "Supported" : "Not Supported / Desktop Native"}
+            </span>
+          </div>
+          <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+            <span>Browser Permission:</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-200 uppercase">
+              {pushStatus?.permission || "DEFAULT"}
+            </span>
+          </div>
+          <div className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+            <span>Encryption Standard:</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-200">
+              RFC 8291 / 8292 (NIST P-256 VAPID)
+            </span>
+          </div>
+        </div>
+
+        <div className="pt-1 flex items-center justify-between">
+          <Button
+            variant={pushStatus?.isSubscribed ? "secondary" : "primary"}
+            size="sm"
+            onClick={handleTogglePush}
+            isLoading={isPushLoading}
+            disabled={!pushStatus?.supported || pushStatus?.permission === "denied"}
+            data-testid="toggle-push-btn"
+          >
+            <Bell className="w-4 h-4 mr-1.5" />
+            {pushStatus?.isSubscribed ? "Disable Push Notifications" : "Enable Push Notifications"}
+          </Button>
+
+          {pushStatus?.permission === "denied" && (
+            <span className="text-[11px] text-rose-500 font-medium">
+              Notifications blocked in browser settings. Click lock icon in URL bar to allow.
+            </span>
+          )}
         </div>
       </div>
 
