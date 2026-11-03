@@ -6,7 +6,6 @@ mod backend_manager;
 use backend_manager::{BackendManager, BackendStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Manager;
 
 static SHUTDOWN_INITIATED: AtomicBool = AtomicBool::new(false);
 
