@@ -1,0 +1,15 @@
+[package]
+name = "hawkoffer"
+version = "0.1.0"
+description = "HawkOffer Desktop Shell"
+authors = ["HawkOffer Team"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin-opener = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
