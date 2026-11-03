@@ -32,6 +32,7 @@ class NotificationType(StrEnum):
 
 
 class NotificationBase(BaseModel):
+    user_id: int | None = Field(default=None, description="Recipient user ID")
     job_id: int
     profile_id: int | None = None
     notification_type: str = Field(default=NotificationType.JOB_ALERT, max_length=50)

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PreferenceProfileBase(BaseModel):
+    user_id: int | None = Field(default=None, description="Owner user ID")
     name: str = Field(default="Default Profile", min_length=1, max_length=255)
     graduation_year: int | None = Field(None, ge=2000, le=2100)
     preferred_roles: list[str] = Field(default_factory=list)

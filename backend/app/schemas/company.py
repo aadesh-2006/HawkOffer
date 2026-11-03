@@ -15,6 +15,8 @@ class CompanyBase(BaseModel):
         description="Scraper platform (greenhouse, lever, ashby, workday, generic)",
     )
     is_active: bool = Field(default=True, description="Whether monitoring is active")
+    is_curated: bool = Field(default=False, description="Whether curated company in global catalog")
+    created_by_user_id: int | None = Field(default=None, description="Creator user ID")
 
     @field_validator("career_url")
     @classmethod
@@ -34,6 +36,7 @@ class CompanyUpdate(BaseModel):
     career_url: str | None = Field(None, min_length=1, max_length=2048)
     platform: str | None = Field(None, max_length=50)
     is_active: bool | None = None
+    is_curated: bool | None = None
 
     @field_validator("career_url")
     @classmethod

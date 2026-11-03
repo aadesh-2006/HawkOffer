@@ -1,5 +1,6 @@
 """SQLAlchemy models package."""
 
+from app.models.application import JobApplication
 from app.models.company import Company
 from app.models.job import Job
 from app.models.log import MonitoringLog
@@ -14,14 +15,18 @@ from app.models.outbox import (
     SystemDrainState,
 )
 from app.models.preference import PreferenceProfile
+from app.models.push import PushSubscription
 from app.models.scan_state import CompanyScanState
 from app.models.semantic import JobEmbedding
+from app.models.subscription import UserCompanySubscription
+from app.models.user import User
 
 __all__ = [
     "BacklogStatus",
     "Company",
     "CompanyScanState",
     "Job",
+    "JobApplication",
     "JobDiscoveryOutbox",
     "JobEmbedding",
     "MonitoringLog",
@@ -30,6 +35,9 @@ __all__ = [
     "OutboxStatus",
     "PreferenceProfile",
     "ProfileReevaluationTask",
+    "PushSubscription",
     "ReevaluationStatus",
     "SystemDrainState",
+    "User",
+    "UserCompanySubscription",
 ]

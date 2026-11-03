@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select, text, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.base import utc_now
+from app.database.compat import acquire_exclusive_write_lock, get_upsert_insert
 from app.database.session import async_session_factory
 from app.filtering.engine import JobFilteringEngine
 from app.filtering.models import EligibilityStatus
@@ -129,7 +129,7 @@ class JobDiscoveryWorker:
         async with self.session_factory() as session:
             try:
                 # Explicitly acquire write lock in SQLite before querying candidates
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 now = utc_now()
 
@@ -275,7 +275,7 @@ class JobDiscoveryWorker:
         async with self.session_factory() as session:
             try:
                 # Short write transaction
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 # 1. Verify lease ownership and current PROCESSING state
                 verify_outbox = await session.execute(
@@ -330,9 +330,9 @@ class JobDiscoveryWorker:
                         )
 
                     if valid_inserts:
-                        # Insert qualifying candidates with targeted SQLite conflict resolution
+                        # Insert qualifying candidates with targeted dialect conflict resolution
                         insert_stmt = (
-                            sqlite_insert(NotificationBacklog)
+                            get_upsert_insert(NotificationBacklog, session)
                             .values(valid_inserts)
                             .on_conflict_do_nothing(
                                 index_elements=["job_id", "profile_id", "profile_revision"]
@@ -373,7 +373,7 @@ class JobDiscoveryWorker:
         """Handle outbox records where the referenced Job was deleted prior to processing."""
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 # Delete orphaned outbox record if still held
                 await session.execute(
                     delete(JobDiscoveryOutbox).where(
@@ -390,7 +390,7 @@ class JobDiscoveryWorker:
         """Record processing failure and transition to FAILED if max attempts exceeded."""
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 res = await session.execute(
                     select(JobDiscoveryOutbox.attempt_count).where(
                         JobDiscoveryOutbox.id == outbox_id

@@ -97,6 +97,7 @@ class JobDiscoveryOutbox(Base):
             "status",
             "id",
             sqlite_where=text("status = 'PENDING'"),
+            postgresql_where=text("status = 'PENDING'"),
         ),
         Index(
             "ix_outbox_claim_expired",
@@ -104,6 +105,7 @@ class JobDiscoveryOutbox(Base):
             "lease_expires_at",
             "id",
             sqlite_where=text("status = 'PROCESSING'"),
+            postgresql_where=text("status = 'PROCESSING'"),
         ),
     )
 
@@ -161,12 +163,14 @@ class NotificationBacklog(Base):
             "created_at",
             "id",
             sqlite_where=text("status = 'QUEUED'"),
+            postgresql_where=text("status = 'QUEUED'"),
         ),
         Index(
             "ix_backlog_queued_fifo",
             "created_at",
             "id",
             sqlite_where=text("status = 'QUEUED'"),
+            postgresql_where=text("status = 'QUEUED'"),
         ),
         # Partial indexes for PROCESSING crash recovery
         Index(
@@ -175,12 +179,14 @@ class NotificationBacklog(Base):
             "created_at",
             "id",
             sqlite_where=text("status = 'PROCESSING'"),
+            postgresql_where=text("status = 'PROCESSING'"),
         ),
         Index(
             "ix_backlog_processing_fifo",
             "created_at",
             "id",
             sqlite_where=text("status = 'PROCESSING'"),
+            postgresql_where=text("status = 'PROCESSING'"),
         ),
         # Unique candidate per job, profile, and revision
         UniqueConstraint(
@@ -241,6 +247,7 @@ class ProfileReevaluationTask(Base):
             "profile_id",
             unique=True,
             sqlite_where=text("status IN ('PENDING', 'RUNNING')"),
+            postgresql_where=text("status IN ('PENDING', 'RUNNING')"),
         ),
     )
 
@@ -269,11 +276,14 @@ class SystemDrainState(Base):
     async def get_or_create(cls, session: "AsyncSession") -> "SystemDrainState":
         """Get or reliably initialize the singleton drain state row with id=1."""
         from sqlalchemy import select
-        from sqlalchemy.dialects.sqlite import insert
 
-        # Atomic insert ... on conflict do nothing to guarantee singleton row existence
+        from app.database.compat import get_upsert_insert
+
+        # Atomic insert ... on conflict do nothing across dialects
         stmt = (
-            insert(cls).values(id=1, drain_counter=0).on_conflict_do_nothing(index_elements=["id"])
+            get_upsert_insert(cls, session)
+            .values(id=1, drain_counter=0)
+            .on_conflict_do_nothing(index_elements=["id"])
         )
         await session.execute(stmt)
 

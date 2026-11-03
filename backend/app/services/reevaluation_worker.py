@@ -9,11 +9,11 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import select, text, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.base import utc_now
+from app.database.compat import acquire_exclusive_write_lock, get_upsert_insert
 from app.database.session import async_session_factory
 from app.filtering.engine import JobFilteringEngine
 from app.filtering.models import EligibilityStatus
@@ -194,7 +194,7 @@ class ProfileReevaluationWorker:
 
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 stmt = (
                     select(ProfileReevaluationTask)
@@ -338,7 +338,7 @@ class ProfileReevaluationWorker:
 
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 # 1. Verify task ownership
                 res = await session.execute(
@@ -395,7 +395,7 @@ class ProfileReevaluationWorker:
                         for cand in candidates
                     ]
 
-                    stmt = sqlite_insert(NotificationBacklog).values(candidate_dicts)
+                    stmt = get_upsert_insert(NotificationBacklog, session).values(candidate_dicts)
                     stmt = stmt.on_conflict_do_nothing(
                         index_elements=["job_id", "profile_id", "profile_revision"]
                     )
@@ -422,7 +422,7 @@ class ProfileReevaluationWorker:
         now = utc_now()
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 res = await session.execute(
                     select(ProfileReevaluationTask).where(ProfileReevaluationTask.id == task.id)
                 )
@@ -456,7 +456,7 @@ class ProfileReevaluationWorker:
 
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 res = await session.execute(
                     select(ProfileReevaluationTask).where(ProfileReevaluationTask.id == task_id)
                 )
@@ -500,7 +500,7 @@ class ProfileReevaluationWorker:
         """Transition task to SUPERSEDED when profile revision changes."""
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 await session.execute(
                     update(ProfileReevaluationTask)
                     .where(
@@ -521,7 +521,7 @@ class ProfileReevaluationWorker:
         """Transition task to CANCELLED when profile is deactivated or missing."""
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 await session.execute(
                     update(ProfileReevaluationTask)
                     .where(
@@ -548,7 +548,7 @@ class ProfileReevaluationWorker:
         """
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 res = await session.execute(
                     select(ProfileReevaluationTask).where(
                         ProfileReevaluationTask.id == task_id,

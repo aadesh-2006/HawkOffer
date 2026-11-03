@@ -11,6 +11,7 @@ from app.database.base import Base
 if TYPE_CHECKING:
     from app.models.job import Job
     from app.models.preference import PreferenceProfile
+    from app.models.user import User
 
 
 class Notification(Base):
@@ -19,6 +20,9 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     job_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
@@ -44,6 +48,9 @@ class Notification(Base):
     )
 
     # Relationships
+    user: Mapped["User | None"] = relationship(
+        "User", back_populates="notifications", lazy="selectin"
+    )
     job: Mapped["Job"] = relationship("Job", back_populates="notifications", lazy="selectin")
     profile: Mapped["PreferenceProfile | None"] = relationship(
         "PreferenceProfile", back_populates="notifications", lazy="selectin"
@@ -71,10 +78,12 @@ class Notification(Base):
             "status",
             "created_at",
         ),
+        Index("ix_notifications_user_id_status", "user_id", "status"),
+        Index("ix_notifications_user_created", "user_id", "created_at"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<Notification(id={self.id}, job_id={self.job_id}, "
+            f"<Notification(id={self.id}, user_id={self.user_id}, job_id={self.job_id}, "
             f"status='{self.status}', delivery='{self.delivery_status}')>"
         )

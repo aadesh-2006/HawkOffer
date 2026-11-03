@@ -18,14 +18,25 @@ logger = logging.getLogger(__name__)
 
 
 def create_engine_instance(db_url: str | None = None, echo: bool | None = None) -> AsyncEngine:
-    """Create a configured AsyncEngine instance with SQLite pragmas."""
+    """Create a configured AsyncEngine with SQLite pragmas or Postgres connection pool."""
     url = db_url or settings.get_database_url()
     is_echo = echo if echo is not None else settings.db_echo
 
+    engine_kwargs: dict[str, object] = {
+        "echo": is_echo,
+        "future": True,
+    }
+
+    # Configure connection pooling for PostgreSQL
+    if "postgresql" in url:
+        engine_kwargs["pool_size"] = settings.db_pool_size
+        engine_kwargs["max_overflow"] = settings.db_max_overflow
+        engine_kwargs["pool_recycle"] = settings.db_pool_recycle
+        engine_kwargs["pool_pre_ping"] = settings.db_pool_pre_ping
+
     engine = create_async_engine(
         url,
-        echo=is_echo,
-        future=True,
+        **engine_kwargs,
     )
 
     # Attach pragmas if using SQLite

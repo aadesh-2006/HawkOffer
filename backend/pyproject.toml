@@ -23,6 +23,7 @@ dependencies = [
     "numpy>=1.26.0",
     "onnxruntime>=1.18.0",
     "tokenizers>=0.19.0",
+    "asyncpg>=0.30.0",
 ]
 
 [project.optional-dependencies]

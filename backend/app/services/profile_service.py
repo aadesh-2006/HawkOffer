@@ -4,10 +4,11 @@ import logging
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.base import utc_now
+from app.database.compat import acquire_exclusive_write_lock
 from app.database.session import async_session_factory
 from app.models.job import Job
 from app.models.outbox import (
@@ -95,7 +96,7 @@ class ProfileUpdateService:
         profile_id: int,
         update_data: PreferenceProfileUpdate | dict[str, Any],
     ) -> tuple[PreferenceProfile | None, ProfileReevaluationTask | None]:
-        await session.execute(text("BEGIN IMMEDIATE"))
+        await acquire_exclusive_write_lock(session)
 
         try:
             # 1. Fetch profile under immediate write lock

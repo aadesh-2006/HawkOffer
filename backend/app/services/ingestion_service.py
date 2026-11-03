@@ -5,9 +5,9 @@ import time
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.compat import get_upsert_insert
 from app.models.company import Company
 from app.models.job import Job
 from app.models.outbox import JobDiscoveryOutbox, OutboxStatus
@@ -232,7 +232,7 @@ class IngestionService:
 
                         # Insert corresponding outbox record in the same savepoint
                         outbox_stmt = (
-                            sqlite_insert(JobDiscoveryOutbox)
+                            get_upsert_insert(JobDiscoveryOutbox, self.session)
                             .values(
                                 job_id=new_job.id,
                                 status=OutboxStatus.PENDING,

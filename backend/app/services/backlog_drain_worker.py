@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.base import utc_now
+from app.database.compat import acquire_exclusive_write_lock
 from app.database.session import async_session_factory
 from app.models.job import Job
 from app.models.notification import Notification
@@ -135,7 +136,7 @@ class BacklogDrainWorker:
 
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 drain_state = await SystemDrainState.get_or_create(session)
                 curr_counter = drain_state.drain_counter
@@ -301,7 +302,7 @@ class BacklogDrainWorker:
         now = utc_now()
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
 
                 # 1. Verify candidate lease ownership
                 res = await session.execute(
@@ -340,6 +341,7 @@ class BacklogDrainWorker:
                         PreferenceProfile.id,
                         PreferenceProfile.revision,
                         PreferenceProfile.is_active,
+                        PreferenceProfile.user_id,
                     ).where(PreferenceProfile.id == backlog_db.profile_id)
                 )
                 prof_row = prof_res.first()
@@ -399,10 +401,11 @@ class BacklogDrainWorker:
                     await session.commit()
                     return PromotionStatus.ALREADY_PROMOTED
 
-                # 5. Create canonical Notification
+                # 5. Create canonical Notification (associating user_id from profile)
                 new_notification = Notification(
                     job_id=backlog_db.job_id,
                     profile_id=backlog_db.profile_id,
+                    user_id=prof_row.user_id,
                     notification_type=NotificationType.JOB_ALERT,
                     status=NotificationStatus.UNREAD,
                     delivery_status=DeliveryStatus.PENDING,
@@ -435,7 +438,7 @@ class BacklogDrainWorker:
         """Record promotion failure fenced by task lease token."""
         async with self.session_factory() as session:
             try:
-                await session.execute(text("BEGIN IMMEDIATE"))
+                await acquire_exclusive_write_lock(session)
                 res = await session.execute(
                     select(NotificationBacklog).where(
                         NotificationBacklog.id == backlog_id,

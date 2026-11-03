@@ -2,14 +2,24 @@
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Float, Index, Integer, String, Text, text
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.notification import Notification
+    from app.models.user import User
 
 
 class PreferenceProfile(Base, TimestampMixin):
@@ -18,10 +28,13 @@ class PreferenceProfile(Base, TimestampMixin):
     __tablename__ = "preference_profiles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), default="Default Profile", nullable=False)
     graduation_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # JSON stored lists of strings
+    # JSON stored lists of strings (Portable sa.JSON)
     preferred_roles: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     preferred_locations: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     preferred_skills: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -50,11 +63,20 @@ class PreferenceProfile(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Relationships
+    user: Mapped["User | None"] = relationship(
+        "User", back_populates="profiles", lazy="selectin"
+    )
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="profile", passive_deletes=True, lazy="selectin"
     )
 
-    __table_args__ = (Index("ix_preference_profiles_is_active", "is_active"),)
+    __table_args__ = (
+        Index("ix_preference_profiles_is_active", "is_active"),
+        Index("ix_preference_profiles_user_active", "user_id", "is_active"),
+    )
 
     def __repr__(self) -> str:
-        return f"<PreferenceProfile(id={self.id}, name='{self.name}', is_active={self.is_active})>"
+        return (
+            f"<PreferenceProfile(id={self.id}, name='{self.name}', "
+            f"user_id={self.user_id}, is_active={self.is_active})>"
+        )

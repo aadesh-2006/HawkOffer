@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     database_url: str | None = None
     db_echo: bool = False
 
+    # Database connection pool settings (for PostgreSQL)
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle: int = 300
+    db_pool_pre_ping: bool = True
+
     # M5 Background Pipeline Scheduling
     discovery_interval_seconds: int = 30
     reevaluation_interval_seconds: int = 60
@@ -58,9 +64,15 @@ class Settings(BaseSettings):
         return self.get_data_dir(create=True)
 
     def get_database_url(self) -> str:
-        """Resolve the async SQLite database URL."""
+        """Resolve the async database URL (SQLite or PostgreSQL)."""
         if self.database_url:
-            return self.database_url
+            url = self.database_url.strip()
+            # Normalize PostgreSQL prefixes for asyncpg
+            if url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif url.startswith("postgresql://") and "+asyncpg" not in url:
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return url
 
         db_path = self.get_data_dir(create=False) / "hawkoffer.db"
         # Always use forward slashes for SQLite URLs across all OSes
@@ -72,6 +84,10 @@ class Settings(BaseSettings):
         async_url = self.get_database_url()
         if async_url.startswith("sqlite+aiosqlite:///"):
             return async_url.replace("sqlite+aiosqlite:///", "sqlite:///")
+        if async_url.startswith("postgresql+asyncpg://"):
+            return async_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        if async_url.startswith("postgres://"):
+            return async_url.replace("postgres://", "postgresql://", 1)
         return async_url
 
 
