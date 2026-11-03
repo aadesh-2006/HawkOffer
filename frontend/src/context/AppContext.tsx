@@ -13,6 +13,8 @@ export type TabId =
 
 export type Theme = "light" | "dark" | "system";
 
+export type ReadinessState = "checking" | "ready" | "failed" | "skipped";
+
 export interface ToastMessage {
   id: string;
   message: string;
@@ -29,13 +31,17 @@ interface AppContextValue {
   resolvedTheme: "light" | "dark";
   setTheme: (theme: Theme) => void;
 
-  // Backend Connectivity
+  // Backend Connectivity & Readiness
   isOnline: boolean;
   isConnecting: boolean;
+  readinessState: ReadinessState;
+  readinessMessage: string;
   lastChecked: Date | null;
   health: HealthResponse | null;
   systemStatus: SystemStatusResponse | null;
-  checkConnection: () => Promise<void>;
+  checkConnection: () => Promise<boolean>;
+  retryReadiness: () => Promise<void>;
+  skipReadinessGate: () => void;
 
   // Unread badge
   unreadCount: number;
@@ -63,8 +69,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">("light");
 
-  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [isOnline, setIsOnline] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(true);
+  const [readinessState, setReadinessState] = useState<ReadinessState>("checking");
+  const [readinessMessage, setReadinessMessage] = useState<string>(
+    "Connecting to HawkOffer background daemon..."
+  );
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [systemStatus, setSystemStatus] = useState<SystemStatusResponse | null>(null);
@@ -122,34 +132,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  const checkConnection = useCallback(async () => {
+  const checkConnection = useCallback(async (): Promise<boolean> => {
     setIsConnecting(true);
     try {
       const [h, s] = await Promise.all([systemApi.getHealth(), systemApi.getStatus()]);
+      const healthy =
+        h.database === "connected" && (h.status === "healthy" || h.status === "degraded");
+
       setHealth(h);
       setSystemStatus(s);
-      setIsOnline(true);
+      setIsOnline(healthy);
       setUnreadCount(s.unread_notifications_count);
       setLastChecked(new Date());
-    } catch {
+
+      if (healthy) {
+        setReadinessState("ready");
+        setReadinessMessage("Backend daemon is healthy and connected.");
+        return true;
+      } else {
+        setReadinessState("failed");
+        setReadinessMessage(`Database reporting status: ${h.database}`);
+        return false;
+      }
+    } catch (err: unknown) {
       setIsOnline(false);
       setHealth(null);
       setSystemStatus(null);
+      setReadinessState("failed");
+      const errorMsg =
+        err instanceof Error ? err.message : "Unable to reach 127.0.0.1:8765";
+      setReadinessMessage(errorMsg);
+      return false;
     } finally {
       setIsConnecting(false);
     }
+  }, []);
+
+  const retryReadiness = useCallback(async () => {
+    setReadinessState("checking");
+    setReadinessMessage("Probing backend service...");
+    // Bounded retry loop (up to 4 attempts spaced by 750ms)
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      setReadinessMessage(`Connecting to backend service (attempt ${attempt}/4)...`);
+      const ready = await checkConnection();
+      if (ready) {
+        return;
+      }
+      if (attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+    }
+    setReadinessState("failed");
+    setReadinessMessage("Could not connect to backend daemon at 127.0.0.1:8765.");
+  }, [checkConnection]);
+
+  const skipReadinessGate = useCallback(() => {
+    setReadinessState("skipped");
   }, []);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([checkConnection(), refreshUnreadCount()]);
   }, [checkConnection, refreshUnreadCount]);
 
-  // Initial load and periodic heartbeats (every 30s)
+  // Initial boot and periodic heartbeats
   useEffect(() => {
-    refreshAll();
-    const interval = setInterval(refreshAll, 30000);
-    return () => clearInterval(interval);
-  }, [refreshAll]);
+    let mounted = true;
+
+    const initialBoot = async () => {
+      const ready = await checkConnection();
+      if (!ready && mounted) {
+        // Automatically attempt a second probe after 1 second for slow startups
+        setTimeout(async () => {
+          if (mounted && readinessState === "failed") {
+            await checkConnection();
+          }
+        }, 1200);
+      }
+    };
+
+    initialBoot();
+
+    // Heartbeat every 30s
+    const interval = setInterval(() => {
+      if (mounted) {
+        refreshAll();
+      }
+    }, 30000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [checkConnection, refreshAll, readinessState]);
 
   return (
     <AppContext.Provider
@@ -161,10 +235,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTheme,
         isOnline,
         isConnecting,
+        readinessState,
+        readinessMessage,
         lastChecked,
         health,
         systemStatus,
         checkConnection,
+        retryReadiness,
+        skipReadinessGate,
         unreadCount,
         refreshUnreadCount,
         selectedJobId,

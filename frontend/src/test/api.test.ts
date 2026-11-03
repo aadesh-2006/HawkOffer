@@ -150,4 +150,22 @@ describe("API Service Client", () => {
     expect(res.status).toBe("completed");
     expect(res.result?.claimed_count).toBe(5);
   });
+
+  it("fetches profiles with list", async () => {
+    const mockProfiles = {
+      items: [{ id: 1, name: "Default Profile", is_active: true, revision: 1 }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => mockProfiles,
+    });
+
+    const res = await profilesApi.list();
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].name).toBe("Default Profile");
+  });
 });

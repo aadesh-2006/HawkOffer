@@ -11,6 +11,7 @@ import { ProfilesScreen } from "./components/profiles/ProfilesScreen";
 import { NotificationsScreen } from "./components/notifications/NotificationsScreen";
 import { MonitoringScreen } from "./components/monitoring/MonitoringScreen";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
+import { BackendReadinessGate } from "./components/layout/BackendReadinessGate";
 
 const AppContent: React.FC = () => {
   const { activeTab } = useApp();
@@ -64,7 +65,9 @@ const AppContent: React.FC = () => {
 export const App: React.FC = () => {
   return (
     <AppProvider>
-      <AppContent />
+      <BackendReadinessGate>
+        <AppContent />
+      </BackendReadinessGate>
     </AppProvider>
   );
 };

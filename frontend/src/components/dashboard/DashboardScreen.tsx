@@ -19,6 +19,7 @@ import { Badge } from "../common/Badge";
 import { Button } from "../common/Button";
 import { LoadingSpinner } from "../common/LoadingSpinner";
 import { EmptyState } from "../common/EmptyState";
+import { FirstRunGuide } from "./FirstRunGuide";
 
 export const DashboardScreen: React.FC = () => {
   const { systemStatus, setActiveTab, setSelectedJobId, showToast, refreshAll, isOnline } =
@@ -129,6 +130,9 @@ export const DashboardScreen: React.FC = () => {
           </Button>
         </div>
       )}
+
+      {/* First-Run Onboarding Guide for New Deployments */}
+      {systemStatus?.companies_count === 0 && <FirstRunGuide />}
 
       {/* KPI Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

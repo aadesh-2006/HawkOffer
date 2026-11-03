@@ -1,10 +1,9 @@
-import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AppProvider } from "../context/AppContext";
 import { JobsFeedScreen } from "../components/jobs/JobsFeedScreen";
 import { JobDetailModal } from "../components/jobs/JobDetailModal";
-import { jobsApi, companiesApi } from "../services/api";
+import { jobsApi } from "../services/api";
 
 const { mockJob, mockCompany } = vi.hoisted(() => ({
   mockJob: {

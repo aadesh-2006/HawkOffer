@@ -61,7 +61,7 @@ export const SettingsScreen: React.FC = () => {
     }
   };
 
-  const runCommand = "cd backend\n.\\.venv\\Scripts\\uvicorn.exe app.main:app --host 127.0.0.1 --port 8765";
+  const runCommand = "cd backend\n.\\.venv\\Scripts\\python.exe -m app.desktop_runtime start";
 
   const copyDaemonCommand = () => {
     navigator.clipboard.writeText(runCommand);
@@ -233,10 +233,10 @@ export const SettingsScreen: React.FC = () => {
         <div>
           <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
             <Terminal className="w-5 h-5 text-teal-600 dark:text-teal-400" />
-            Launch Local Backend Daemon
+            Desktop Runtime Supervisor
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            The desktop frontend communicates locally with FastAPI. Run the daemon in your terminal:
+            The desktop supervisor manages single-instance PID locking, database readiness verification, and graceful shutdown:
           </p>
         </div>
 

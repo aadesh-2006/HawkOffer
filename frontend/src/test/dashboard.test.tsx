@@ -1,9 +1,8 @@
-import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AppProvider } from "../context/AppContext";
 import { DashboardScreen } from "../components/dashboard/DashboardScreen";
-import { jobsApi, monitoringApi, systemApi } from "../services/api";
+import { monitoringApi } from "../services/api";
 
 vi.mock("../services/api", () => ({
   getApiBaseUrl: () => "http://127.0.0.1:8765/api/v1",
