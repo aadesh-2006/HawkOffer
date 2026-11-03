@@ -220,3 +220,70 @@ def test_status_diagnostics(runtime_manager: DesktopRuntimeManager) -> None:
         assert info["ready"] is True
         assert info["latency_ms"] == 12.5
         assert info["details"]["database"] == "connected"
+        assert info["owns_process"] is False
+
+
+def test_process_ownership_reused_instance_preserves_external_daemon(
+    runtime_manager: DesktopRuntimeManager,
+) -> None:
+    """Reusing an already running backend marks process unowned and preserves it on stop."""
+    external_pid = os.getpid()
+    runtime_manager.write_pid(external_pid)
+
+    with patch.object(
+        runtime_manager,
+        "check_readiness",
+        return_value=ReadinessResult(
+            ready=True,
+            status_code=200,
+            latency_ms=1.5,
+            message="Ready",
+            details={"database": "connected"},
+        ),
+    ):
+        success, msg = runtime_manager.start(wait=True)
+        assert success is True
+        assert "already running" in msg
+        assert runtime_manager.owns_process is False
+
+        # Attempt stop with only_if_owned=True (e.g. desktop window close)
+        stop_success, stop_msg = runtime_manager.stop(only_if_owned=True)
+        assert stop_success is True
+        assert "preserved" in stop_msg
+        # External PID file must remain intact
+        assert runtime_manager.read_pid() == external_pid
+
+
+def test_process_ownership_spawned_instance_terminates_on_stop(
+    runtime_manager: DesktopRuntimeManager,
+) -> None:
+    """Spawning a new backend marks process owned and allows clean stop."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 98765
+
+    with (
+        patch.object(
+            runtime_manager,
+            "check_readiness",
+            side_effect=[
+                ReadinessResult(ready=False, status_code=None, latency_ms=0.0, message="Offline"),
+                ReadinessResult(ready=True, status_code=200, latency_ms=1.0, message="Ready"),
+            ],
+        ),
+        patch("subprocess.Popen", return_value=mock_proc),
+    ):
+        success, msg = runtime_manager.start(wait=True, timeout_seconds=2.0)
+        assert success is True
+        assert runtime_manager.owns_process is True
+        assert runtime_manager.read_pid() == 98765
+
+    with (
+        patch.object(runtime_manager, "is_process_alive", side_effect=[True, False]),
+        patch("os.kill") as mock_kill,
+    ):
+        stop_success, stop_msg = runtime_manager.stop(only_if_owned=True)
+        assert stop_success is True
+        assert "stopped cleanly" in stop_msg
+        assert mock_kill.called
+        assert runtime_manager.read_pid() is None
+        assert runtime_manager.owns_process is False
