@@ -14,7 +14,8 @@ flowchart LR
     M12["M12: SaaS Foundation & Architecture Audit<br/>(COMPLETED)"] --> M13["M13: Multi-Tenant Data Model & PostgreSQL<br/>(COMPLETED)"]
     M13 --> M14["M14: User Auth & Tenant Isolation<br/>(COMPLETED)"]
     M14 --> M15["M15: Centralized Monitoring & Fan-Out<br/>(COMPLETED)"]
-    M15 --> M16["M16: Web Push Notifications (RFC 8291)"]
+    M15 --> M15_1["M15.1: Production Safety & Hardening<br/>(COMPLETED)"]
+    M15_1 --> M16["M16: Web Push Notifications (RFC 8291)"]
     M16 --> M17["M17: Public Web Dashboard & Application Tracking"]
     M17 --> M18["M18: Zero-Budget Cloud Deployment & Acceptance"]
 ```
@@ -117,6 +118,40 @@ flowchart LR
   - Per-user role filtering criteria validated.
   - Desktop legacy profile backward compatibility verified.
   - Zero linting or typing regressions (`ruff check` and `mypy` passed clean).
+
+---
+
+### Milestone 15.1: Production Safety & Multi-Tenant Monitoring Hardening
+*Status: COMPLETED (Verified across 370 backend tests & 34 frontend tests)*
+*Objective: Harden cron secrets, implement database-backed distributed leases for cross-process coordination, isolate desktop profiles, and ensure monitoring target safety.*
+
+- **Delivered Capabilities**:
+  1. **Production Cron Secret Security**:
+     - Predictable development tokens removed from production defaults.
+     - Enforced minimum 32-character secret length and rejection of known weak secrets in production (`validate_production_cron_secret`).
+     - Fail-closed behavior (HTTP 503) when production secret is missing or insecure.
+     - Kept zero-secret-leakage logging and constant-time `secrets.compare_digest`.
+     - Seamless non-production ergonomics (`hawkoffer-dev-cron-secret-token` only in dev/test).
+  2. **Zero-Cost Distributed Leases**:
+     - Database-backed `DistributedLease` on `distributed_leases` table.
+     - Atomic acquisition across multiple application processes/containers without Redis or paid brokers.
+     - Crash recovery via expiration TTL (`monitoring_lease_ttl_seconds`, default 300s).
+     - Unique owner token (`uuid4`) preventing expired/stale former owners from releasing newer owners' leases.
+  3. **Desktop Profile Isolation**:
+     - Strict suppression of unauthenticated legacy desktop profiles (`user_id IS NULL`) in SaaS mode (`auth_required=True`).
+     - In desktop/mixed mode, legacy profiles only evaluate against curated or desktop-created companies (never private SaaS companies).
+  4. **Target Selection Semantics**:
+     - Desktop fallback (`list_active()`) only triggers when `auth_required=False` and zero subscriptions exist. Never falls back to arbitrary companies in SaaS deployments.
+     - Inactive users (`user.is_active=False`) excluded from monitoring demand calculations.
+     - Curated companies without subscribers configurable via `monitor_curated_without_subscribers` (default `False`).
+  5. **Reliable Error Handling & Observability**:
+     - Guaranteed lease release in `try ... finally` block.
+     - Pipeline worker failures (Discovery, Backlog Drain) accurately reported as `partial_failure` or `failed`.
+- **Verification Gates Achieved**:
+  - 13 comprehensive M15.1 tests passed (`tests/test_m15_1_monitoring_hardening.py`).
+  - Alembic migration `d5e6f7a8b9c0_m15_1_distributed_leases.py` verified for clean upgrade/downgrade roundtrips.
+  - All 370 backend tests and 34 frontend tests passed.
+
 
 ---
 

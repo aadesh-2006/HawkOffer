@@ -25,6 +25,7 @@ from app.scrapers.registry import registry as default_registry
 from app.services.backlog_drain_worker import BacklogDrainWorker, DrainRunResult
 from app.services.discovery_worker import DiscoveryRunResult, JobDiscoveryWorker
 from app.services.ingestion_service import IngestionResult, IngestionService
+from app.services.lease_service import DistributedLeaseService
 from app.services.reevaluation_worker import ProfileReevaluationWorker, ReevaluationRunResult
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,9 @@ class MonitoringOrchestrator:
         self._reevaluation_lock = asyncio.Lock()
         self._drain_lock = asyncio.Lock()
         self._cron_monitor_lock = asyncio.Lock()
+
+        # Zero-cost distributed lease service for cross-process multi-tenant coordination
+        self.lease_service = DistributedLeaseService(self.session_factory)
 
     def _validate_configuration(self) -> None:
         """Validate that all scheduling parameters and batch sizes are strictly positive."""
@@ -684,12 +688,15 @@ class MonitoringOrchestrator:
 
         1. Selects distinct active companies that have active monitoring demand from at least
            one subscribed user (or active curated/desktop companies).
-        2. Scrapes each eligible company exactly once with lock isolation, scan state tracking,
+        2. Coordinates across multiple processes using a database-backed distributed lease
+           ('centralized_monitoring') with an in-process local lock fast-path.
+        3. Scrapes each eligible company exactly once with lock isolation, scan state tracking,
            and exponential backoff. Handles partial failures without aborting the batch.
-        3. Runs JobDiscoveryWorker to evaluate newly ingested jobs against subscribed users'
+        4. Runs JobDiscoveryWorker to evaluate newly ingested jobs against subscribed users'
            active profiles, inserting matching candidates into NotificationBacklog.
-        4. Runs BacklogDrainWorker to fairly promote candidates into user Notification records
+        5. Runs BacklogDrainWorker to fairly promote candidates into user Notification records
            with per-user deduplication.
+        6. Safely and deterministically releases the distributed lease in a finally block.
         """
         if self._is_shutting_down:
             logger.warning("Centralized monitoring cycle skipped: orchestrator is shutting down.")
@@ -700,7 +707,7 @@ class MonitoringOrchestrator:
 
         if self._cron_monitor_lock.locked():
             logger.warning(
-                "Centralized monitoring cycle is already in progress. Skipping execution."
+                "Centralized monitoring cycle is already in progress locally. Skipping execution."
             )
             return CentralizedMonitoringResult(
                 status="skipped_overlapping",
@@ -708,65 +715,93 @@ class MonitoringOrchestrator:
             )
 
         async with self._cron_monitor_lock:
+            # Cross-process coordination via database-backed distributed lease
+            lease_token = await self.lease_service.acquire_lease(
+                name="centralized_monitoring",
+                ttl_seconds=settings.monitoring_lease_ttl_seconds,
+            )
+            if not lease_token:
+                logger.warning(
+                    "Distributed lease for 'centralized_monitoring' is currently held. "
+                    "Skipping cross-process overlapping execution."
+                )
+                return CentralizedMonitoringResult(
+                    status="skipped_overlapping",
+                    message="A monitoring run is currently in progress across processes",
+                )
+
             start_perf = time.perf_counter()
             result = CentralizedMonitoringResult()
             errors: list[str] = []
 
-            # Step 1: Select distinct companies with active demand
-            async with self.session_factory() as session:
-                company_repo = CompanyRepository(session)
-                targets = await company_repo.list_active_monitored_targets()
+            try:
+                # Step 1: Select distinct companies with active demand
+                async with self.session_factory() as session:
+                    company_repo = CompanyRepository(session)
+                    targets = await company_repo.list_active_monitored_targets()
 
-            result.companies_targeted = len(targets)
-            logger.info(
-                "Starting centralized monitoring cycle for %d company targets", len(targets)
-            )
+                result.companies_targeted = len(targets)
+                logger.info(
+                    "Starting centralized monitoring cycle for %d company targets", len(targets)
+                )
 
-            # Step 2: Scrape each eligible company once
-            for company in targets:
-                try:
-                    scan_res = await self.run_company_scan(company.id)
-                    if scan_res is not None:
-                        if scan_res.failed_records > 0 and scan_res.total_fetched == 0:
-                            result.companies_failed += 1
-                            if scan_res.errors:
-                                errors.extend([f"{company.name}: {e}" for e in scan_res.errors])
+                # Step 2: Scrape each eligible company once
+                for company in targets:
+                    try:
+                        scan_res = await self.run_company_scan(company.id)
+                        if scan_res is not None:
+                            if scan_res.failed_records > 0 and scan_res.total_fetched == 0:
+                                result.companies_failed += 1
+                                if scan_res.errors:
+                                    errors.extend([f"{company.name}: {e}" for e in scan_res.errors])
+                            else:
+                                result.companies_scraped += 1
+                                result.jobs_new += scan_res.newly_inserted
+                                result.jobs_updated += scan_res.updated_records
+                                result.jobs_existing += scan_res.already_existing
                         else:
-                            result.companies_scraped += 1
-                            result.jobs_new += scan_res.newly_inserted
-                            result.jobs_updated += scan_res.updated_records
-                            result.jobs_existing += scan_res.already_existing
-                    else:
+                            result.companies_failed += 1
+                            errors.append(f"{company.name}: Scan skipped or returned no result")
+                    except Exception as exc:
+                        logger.exception(
+                            "Failed scraping company %d (%s): %s", company.id, company.name, exc
+                        )
                         result.companies_failed += 1
+                        errors.append(f"{company.name}: {exc}")
+
+                # Step 3: Fan-out discovery worker
+                try:
+                    discovery_res = await self.run_discovery_worker()
+                    if discovery_res is not None:
+                        result.discovery_evaluated = discovery_res.evaluated_jobs
+                        result.candidates_created = discovery_res.candidate_matches
+                    else:
+                        errors.append("DiscoveryWorker execution failed or was skipped")
                 except Exception as exc:
                     logger.exception(
-                        "Failed scraping company %d (%s): %s", company.id, company.name, exc
+                        "Error during discovery worker execution in monitoring cycle: %s", exc
                     )
-                    result.companies_failed += 1
-                    errors.append(f"{company.name}: {exc}")
+                    errors.append(f"DiscoveryWorker: {exc}")
 
-            # Step 3: Fan-out discovery worker
-            try:
-                discovery_res = await self.run_discovery_worker()
-                if discovery_res:
-                    result.discovery_evaluated = discovery_res.evaluated_jobs
-                    result.candidates_created = discovery_res.candidate_matches
-            except Exception as exc:
-                logger.exception(
-                    "Error during discovery worker execution in monitoring cycle: %s", exc
-                )
-                errors.append(f"DiscoveryWorker: {exc}")
+                # Step 4: Backlog drain worker
+                try:
+                    drain_res = await self.run_backlog_drain_worker()
+                    if drain_res is not None:
+                        result.notifications_promoted = drain_res.promoted_count
+                    else:
+                        errors.append("BacklogDrainWorker execution failed or was skipped")
+                except Exception as exc:
+                    logger.exception(
+                        "Error during backlog drain worker execution in monitoring cycle: %s", exc
+                    )
+                    errors.append(f"BacklogDrainWorker: {exc}")
 
-            # Step 4: Backlog drain worker
-            try:
-                drain_res = await self.run_backlog_drain_worker()
-                if drain_res:
-                    result.notifications_promoted = drain_res.promoted_count
             except Exception as exc:
-                logger.exception(
-                    "Error during backlog drain worker execution in monitoring cycle: %s", exc
-                )
-                errors.append(f"BacklogDrainWorker: {exc}")
+                logger.exception("Unexpected exception in centralized monitoring cycle: %s", exc)
+                errors.append(f"CentralizedMonitoringCycle: {exc}")
+            finally:
+                # Always release distributed lease safely
+                await self.lease_service.release_lease("centralized_monitoring", lease_token)
 
             duration_ms = int((time.perf_counter() - start_perf) * 1000)
             result.duration_ms = duration_ms

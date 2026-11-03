@@ -27,13 +27,23 @@ def verify_cron_secret(
     1. 'X-Cron-Secret: <secret>' header
     2. 'Authorization: Bearer <secret>' header
 
-    Validates using constant-time comparison. Rejects ordinary user tokens.
+    Validates using constant-time comparison. Rejects weak secrets in production.
+    Never logs secret content.
     """
+    if settings.is_production:
+        is_valid, reason = settings.validate_production_cron_secret()
+        if not is_valid:
+            logger.error("Cron endpoint rejected: %s", reason)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Cron endpoint is disabled: {reason}",
+            )
+
     secret = settings.cron_secret
     if not secret:
-        logger.error("Cron secret authentication rejected: HAWKOFFER_CRON_SECRET not configured")
+        logger.error("Cron authentication rejected: HAWKOFFER_CRON_SECRET not configured")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Cron secret is not configured on the server",
         )
 

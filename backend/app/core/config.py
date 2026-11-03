@@ -5,6 +5,17 @@ from pathlib import Path
 from platformdirs import user_data_dir
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+KNOWN_INSECURE_CRON_SECRETS: frozenset[str] = frozenset({
+    "hawkoffer-dev-cron-secret-token",
+    "hawkoffer-dev-secret-key-change-in-production-min-32-chars",
+    "changeme",
+    "secret",
+    "password",
+    "admin",
+    "12345678",
+    "cron-secret",
+})
+
 
 class Settings(BaseSettings):
     """HawkOffer application settings."""
@@ -41,7 +52,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
     auth_required: bool = False
-    cron_secret: str = "hawkoffer-dev-cron-secret-token"
+    cron_secret: str | None = None
+
+    # M15 & M15.1 Multi-Tenant Centralized Monitoring
+    monitor_curated_without_subscribers: bool = False
+    monitoring_lease_ttl_seconds: int = 300
 
     # M5 Background Pipeline Scheduling
     discovery_interval_seconds: int = 30
@@ -97,6 +112,39 @@ class Settings(BaseSettings):
         if async_url.startswith("postgres://"):
             return async_url.replace("postgres://", "postgresql://", 1)
         return async_url
+
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        # In development and test environments, provide a fallback secret if none configured
+        # so local development and non-production tests work without friction.
+        # In production, leave it as None if not explicitly provided so it fails closed.
+        if self.cron_secret is None and not self.is_production:
+            self.cron_secret = "hawkoffer-dev-cron-secret-token"
+
+    @property
+    def is_production(self) -> bool:
+        """Return True if the application is running in production environment."""
+        return self.env.strip().lower() in ("production", "prod")
+
+    @property
+    def is_saas_mode(self) -> bool:
+        """Return True if running as a multi-tenant SaaS deployment."""
+        return self.auth_required or self.is_production
+
+    def validate_production_cron_secret(self) -> tuple[bool, str]:
+        """Validate whether the configured cron secret meets production security standards.
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        if not self.cron_secret:
+            return False, "HAWKOFFER_CRON_SECRET is not configured"
+        secret = self.cron_secret.strip()
+        if secret.lower() in KNOWN_INSECURE_CRON_SECRETS:
+            return False, "HAWKOFFER_CRON_SECRET uses a known insecure development default"
+        if len(secret) < 32:
+            return False, "HAWKOFFER_CRON_SECRET must be at least 32 characters in production"
+        return True, "Valid"
 
 
 # Global settings singleton

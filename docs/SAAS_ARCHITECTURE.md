@@ -1,6 +1,6 @@
 # HawkOffer SaaS Architecture Specification
 
-**Status:** APPROVED (M13–M15 Implemented)  
+**Status:** APPROVED (M13–M15.1 Implemented)  
 **Version:** 2.1.0  
 **Target Milestone:** M13–M18 SaaS Evolution  
 **Author:** SaaS Architecture & Systems Engineering  
@@ -78,6 +78,7 @@ flowchart TD
         OutboxTbl[("job_discovery_outbox")]
         BacklogTbl[("notification_backlog")]
         NotifTbl[("notifications & push_subscriptions")]
+        LeaseTbl[("distributed_leases (cross-process mutex)")]
         
         PG --- UsersTbl
         PG --- SubTbl
@@ -87,6 +88,7 @@ flowchart TD
         PG --- OutboxTbl
         PG --- BacklogTbl
         PG --- NotifTbl
+        PG --- LeaseTbl
     end
 
     subgraph PushGatewayLayer["Push Service Gateways (Zero Cost RFC 8291)"]

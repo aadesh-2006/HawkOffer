@@ -598,7 +598,7 @@ async def test_cron_endpoint_authentication_and_execution(
     - Accepts valid X-Cron-Secret or Authorization: Bearer <cron_secret>.
     - Returns structured summary.
     """
-    secret = settings.cron_secret
+    secret = settings.cron_secret or "hawkoffer-dev-cron-secret-token"
 
     # 1. Missing credentials -> 401
     res_no_auth = await m15_client.post("/internal/cron/monitor")
@@ -638,7 +638,7 @@ async def test_cron_endpoint_overlap_protection(
     orchestrator_fixture: MonitoringOrchestrator,
 ) -> None:
     """Verify that concurrent/overlapping cron monitoring runs are rejected with 409 Conflict."""
-    secret = settings.cron_secret
+    secret = settings.cron_secret or "hawkoffer-dev-cron-secret-token"
 
     # Acquire lock externally to simulate ongoing monitoring cycle
     async with orchestrator_fixture._cron_monitor_lock:

@@ -10,11 +10,13 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.database.base import utc_now
 from app.database.compat import acquire_exclusive_write_lock, get_upsert_insert
 from app.database.session import async_session_factory
 from app.filtering.engine import JobFilteringEngine
 from app.filtering.models import EligibilityStatus
+from app.models.company import Company
 from app.models.job import Job
 from app.models.outbox import BacklogStatus, JobDiscoveryOutbox, NotificationBacklog, OutboxStatus
 from app.models.preference import PreferenceProfile
@@ -233,16 +235,29 @@ class JobDiscoveryWorker:
                     company_subscriber_profiles[cid].append(prof)
 
             # 3. Resolve legacy desktop profiles (where user_id IS NULL)
-            stmt_legacy = select(PreferenceProfile).where(
-                PreferenceProfile.user_id.is_(None),
-                PreferenceProfile.is_active.is_(True),
-            )
-            legacy_res = await session.execute(stmt_legacy)
-            legacy_profiles = list(legacy_res.scalars().all())
+            # In SaaS multi-tenant mode (auth_required=True), unauthenticated desktop profiles
+            # are strictly suppressed to guarantee tenant isolation.
+            # In desktop single-user mode (auth_required=False), legacy profiles only evaluate
+            # against curated or desktop-created companies (never against private SaaS companies).
+            if not settings.auth_required and company_ids:
+                stmt_legacy = select(PreferenceProfile).where(
+                    PreferenceProfile.user_id.is_(None),
+                    PreferenceProfile.is_active.is_(True),
+                )
+                legacy_res = await session.execute(stmt_legacy)
+                legacy_profiles = list(legacy_res.scalars().all())
 
-            # For each company, combine its subscribed user profiles with legacy desktop profiles
-            for cid in company_ids:
-                company_subscriber_profiles[cid].extend(legacy_profiles)
+                if legacy_profiles:
+                    comp_res = await session.execute(
+                        select(Company).where(Company.id.in_(company_ids))
+                    )
+                    companies_by_id = {c.id: c for c in comp_res.scalars().all()}
+
+                    for cid in company_ids:
+                        comp = companies_by_id.get(cid)
+                        # Attach legacy desktop profile if curated or created locally
+                        if comp and (comp.is_curated or comp.created_by_user_id is None):
+                            company_subscriber_profiles[cid].extend(legacy_profiles)
 
         valid_outbox_ids: set[int] = set()
         jobs_with_profiles: list[tuple[ClaimedOutboxRecord, Job, list[PreferenceProfile]]] = []

@@ -3,6 +3,7 @@
 from app.models.application import JobApplication
 from app.models.company import Company
 from app.models.job import Job
+from app.models.lease import DistributedLease
 from app.models.log import MonitoringLog
 from app.models.notification import Notification
 from app.models.outbox import (
@@ -26,6 +27,7 @@ __all__ = [
     "BacklogStatus",
     "Company",
     "CompanyScanState",
+    "DistributedLease",
     "Job",
     "JobApplication",
     "JobDiscoveryOutbox",
