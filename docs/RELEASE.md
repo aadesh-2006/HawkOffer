@@ -127,13 +127,24 @@ This produces the native Windows installer (`.msi` / `.exe` via NSIS) containing
 
 ---
 
-## 6. Verification Quality Gates (M9.1 Sign-Off)
+## 6. Verification Quality Gates & Status (M9.2 Release Engineering Audit)
 
-All verification suites pass automated checks:
+All automated validation and packaging suites pass cleanly:
 - **Backend Test Suite**: 306 passed (100% pass rate across all 306 tests, including `test_backend_bundle.py`, `test_desktop_runtime.py`, and `test_persistence_lifecycle.py`).
 - **Frontend Test Suite**: 33 passed across 9 test suites (`vitest`).
 - **Type Checking**: `mypy` strict mode passes across all 88 source files with 0 errors; `tsc --noEmit` passes with 0 errors.
 - **Linting**: `ruff` passes with 0 violations.
-- **Vite Production Bundle**: Builds cleanly without errors (`dist/index.html`, `dist/assets/`).
+- **Vite Production Bundle**: Builds cleanly without errors (`frontend/dist/index.html`, `frontend/dist/assets/`).
 - **PyInstaller Bundled Daemon**: Compiles relocatable 24.2 MB binary `backend/dist/hawkoffer-backend.exe` verified against `/health` and persistence lifecycle without Python.
-- **Toolchain Status**: Official Rust 1.99.1 & Cargo 1.99.1 verified. Native MSVC binary link step requires Microsoft Visual C++ Build Tools (`Microsoft.VisualStudio.2022.BuildTools`). Packaging pipeline is verified and ready for CI/CD runners with MSVC.
+- **Unified Release Pipeline**: `scripts/build_release.py` runs end-to-end, producing `dist/release-manifest.json` with SHA-256 integrity checksums.
+- **Native Toolchain Status & Blocker**:
+  - Rust 1.99.1 & Cargo 1.99.1 verified.
+  - Native Windows compilation (`cargo build` / `tauri build`) requires Microsoft Visual C++ Build Tools (`Microsoft.VisualStudio.2022.BuildTools` with "Desktop development with C++" workload).
+  - Unattended installation halted at Windows UAC elevation boundary (`0x80070642 / Exit Code 1602`). To complete MSVC provisioning, run the cached bootstrapper in an elevated PowerShell prompt:
+    ```powershell
+    & "C:\Users\Aadesh\AppData\Local\Temp\WinGet\Microsoft.VisualStudio.2022.BuildTools.17.14.44\vs_BuildTools.exe" --quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
+    ```
+    Followed by native packaging:
+    ```powershell
+    cd frontend && npx @tauri-apps/cli build
+    ```

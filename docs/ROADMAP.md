@@ -266,6 +266,28 @@ flowchart LR
 
 ---
 
+### Milestone 9.2: Windows Native Build & Installer Acceptance (BLOCKED ON ELEVATED MSVC TOOLCHAIN)
+- **Status**: Environment Audited & Provisioning Attempted / Blocked on Administrator UAC Elevation
+- **Focus**: Native Windows packaging, MSVC build toolchain provisioning, NSIS installer compilation, and installed application lifecycle verification.
+- **Tasks**:
+  1. Environment Audit:
+     - Verified Rust 1.99.1, Cargo 1.99.1, and target `x86_64-pc-windows-msvc`.
+     - Confirmed sidecar configuration in `src-tauri/tauri.conf.json` and presence of 24.2 MB standalone binaries in `src-tauri/binaries/` and `dist/`.
+     - Confirmed system `link.exe` in PATH points to Git's GNU coreutils `link.exe`.
+  2. Toolchain Provisioning & UAC Blocker:
+     - Downloaded official bootstrapper `Microsoft.VisualStudio.2022.BuildTools` (17.14.44).
+     - Headless execution halted with exit code `1602` (`0x80070642` / `User may have declined UAC prompt`).
+     - In strict accordance with release engineering protocol, halted automated installation at the UAC elevation boundary and documented the precise administrator execution command.
+  3. Quality Gates:
+     - All 306 backend unit, integration, bundle, and persistence tests pass.
+     - All 33 frontend Vitest tests pass across 9 suites.
+     - TypeScript, Vite build, Ruff linting, and strict MyPy pass with 0 errors.
+- **Acceptance Criteria**:
+  - Exact blocker and forensic decompression log documented.
+  - Clear distinction between source code, test verification, native compilation, and installer execution.
+
+---
+
 ### Milestone 10: AI-Powered Job & Resume Matching (Phase 2)
 - **Focus**: Semantic job scoring, resume parsing, and personalized match recommendations.
 - **Tasks**:
