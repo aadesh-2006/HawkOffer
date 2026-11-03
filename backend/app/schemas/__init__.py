@@ -61,6 +61,7 @@ from app.schemas.preference import (
     PreferenceProfileUpdate,
 )
 from app.schemas.push import (
+    PushDeliveryStatus,
     PushDispatchResponse,
     PushKeys,
     PushSubscriptionCreate,
@@ -122,6 +123,7 @@ __all__ = [
     "PreferenceProfileCreate",
     "PreferenceProfileRead",
     "PreferenceProfileUpdate",
+    "PushDeliveryStatus",
     "PushDispatchResponse",
     "PushKeys",
     "PushSubscriptionCreate",

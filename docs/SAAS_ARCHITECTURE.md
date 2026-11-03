@@ -352,8 +352,13 @@ flowchart LR
     SW -->|9. showNotification()| Browser
 ```
 
-### Automatic Subscription Hygiene (410 Gone Handling)
-When a user uninstalls a browser, clears site permissions, or replaces a device, the Push Service responds with HTTP `410 Gone` or `404 Not Found`. The push sender immediately marks the subscription inactive or deletes it, preventing zombie subscription accumulation and keeping dispatch times under 200ms.
+### Automatic Subscription Hygiene & Security Hardening
+1. **Endpoint Ownership & Takeover Prevention**: When a browser registers an endpoint via `POST /api/v1/push/subscribe`, the backend enforces strict user ownership. If an endpoint is already registered by another account, the request is rejected with `HTTP 409 Conflict`. Re-registration by the same user updates keys idempotently.
+2. **Anti-SSRF Endpoint Validation**: Endpoints are strictly validated: must use the `https://` scheme, cannot contain user credentials, and cannot target `localhost`, loopback, or private/reserved IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`).
+3. **Atomic Batch Claiming & Stale Lease Fencing**: Workers claim notifications via `UPDATE notifications ... RETURNING id` re-checking all eligibility predicates at execution time. State transitions verify the expected lease token, rejecting stale owners whose leases expired.
+4. **Heartbeats & Abandoned Recovery**: Before dispatching to push gateways, workers renew the lease TTL. If a worker crashes while in `PROCESSING`, the notification is automatically reclaimed by any active worker once its lease expires.
+5. **Device-Level Semantics**: Device delivery state explicitly distinguishes `DELIVERED`, `TRANSIENT_FAILURE` (temporary 429/5xx/timeout), `PERMANENTLY_INVALID` (404/410), and `EXHAUSTED` (attempts limit reached). Devices that succeed are never re-sent pushes on retries.
+6. **Delivery Guarantees & At-Least-Once Delivery**: Because Web Push does not support distributed two-phase commits across third-party browser push gateways, exactly-once delivery across network partitions is theoretically impossible. HawkOffer implements reliable **at-least-once delivery with device-level deduplication and Service Worker tag replacement** (`tag: job-{id}`) ensuring identical job alerts replace earlier alerts in the OS notification center.
 
 ---
 

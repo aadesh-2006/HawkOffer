@@ -391,8 +391,8 @@ export interface PushSubscriptionRead {
   id: number;
   user_id: number;
   endpoint: string;
-  p256dh: string;
-  auth: string;
+  p256dh?: string | null;
+  auth?: string | null;
   user_agent: string | null;
   failure_count: number;
   created_at: string;

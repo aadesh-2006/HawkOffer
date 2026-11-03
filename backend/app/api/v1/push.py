@@ -2,9 +2,11 @@
 
 import logging
 from typing import Annotated
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db
@@ -23,6 +25,16 @@ from app.schemas.push import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/push", tags=["Web Push"])
+
+
+def redact_endpoint(endpoint: str) -> str:
+    """Redact sensitive push token from gateway endpoint for safe logging."""
+    try:
+        parsed = urlparse(endpoint)
+        token_suffix = endpoint[-12:] if len(endpoint) > 12 else endpoint
+        return f"{parsed.scheme}://{parsed.netloc}/...{token_suffix}"
+    except Exception:
+        return "[REDACTED_ENDPOINT]"
 
 
 @router.get(
@@ -52,7 +64,7 @@ async def get_public_vapid_key() -> VapidPublicKeyResponse:
     summary="Register or update a browser Web Push subscription",
     description=(
         "Registers a Web Push subscription endpoint and encryption keys for the "
-        "authenticated user. Upserts idempotently if endpoint is already registered."
+        "authenticated user. Upserts idempotently for the same user; rejects takeover."
     ),
 )
 async def register_push_subscription(
@@ -61,16 +73,30 @@ async def register_push_subscription(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> PushSubscription:
     """Register or refresh an RFC 8291 Web Push subscription for the active user."""
-    # Look up existing subscription by unique endpoint
+    now = utc_now()
+    redacted = redact_endpoint(data.endpoint)
+
+    # 1. Look up existing subscription by unique endpoint
     stmt = select(PushSubscription).where(PushSubscription.endpoint == data.endpoint)
     res = await session.execute(stmt)
     existing = res.scalar_one_or_none()
 
-    now = utc_now()
-
     if existing:
-        # Update existing record and associate with current user (idempotent upsert)
-        existing.user_id = current_user.id
+        # Prevent cross-user endpoint hijacking
+        if existing.user_id != current_user.id:
+            logger.warning(
+                "Cross-user push subscription takeover rejected: endpoint %s owned by user %d, "
+                "attempted by user %d",
+                redacted,
+                existing.user_id,
+                current_user.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Subscription endpoint is already registered by another account",
+            )
+
+        # Idempotent key update for the same user
         existing.p256dh = data.keys.p256dh
         existing.auth = data.keys.auth
         existing.user_agent = data.user_agent
@@ -79,14 +105,15 @@ async def register_push_subscription(
         await session.commit()
         await session.refresh(existing)
         logger.info(
-            "Updated Web Push subscription %d for user %d (device: %s)",
+            "Updated Web Push subscription %d for user %d (device: %s, endpoint: %s)",
             existing.id,
             current_user.id,
             (data.user_agent or "unknown")[:30],
+            redacted,
         )
         return existing
 
-    # Create new subscription
+    # 2. Create new subscription with race-condition handling
     new_sub = PushSubscription(
         user_id=current_user.id,
         endpoint=data.endpoint,
@@ -98,14 +125,45 @@ async def register_push_subscription(
         last_used_at=now,
     )
     session.add(new_sub)
-    await session.commit()
-    await session.refresh(new_sub)
-    logger.info(
-        "Registered new Web Push subscription %d for user %d",
-        new_sub.id,
-        current_user.id,
-    )
-    return new_sub
+
+    try:
+        await session.commit()
+        await session.refresh(new_sub)
+        logger.info(
+            "Registered new Web Push subscription %d for user %d (endpoint: %s)",
+            new_sub.id,
+            current_user.id,
+            redacted,
+        )
+        return new_sub
+    except IntegrityError:
+        # Concurrent duplicate registration race won by another request
+        await session.rollback()
+        conflict_res = await session.execute(stmt)
+        winner = conflict_res.scalar_one_or_none()
+        if winner:
+            if winner.user_id != current_user.id:
+                logger.warning(
+                    "Concurrent push takeover rejected: endpoint %s owned by user %d, "
+                    "attempted by user %d",
+                    redacted,
+                    winner.user_id,
+                    current_user.id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Subscription endpoint is already registered by another account",
+                ) from None
+            # Same user won the race; perform idempotent update
+            winner.p256dh = data.keys.p256dh
+            winner.auth = data.keys.auth
+            winner.user_agent = data.user_agent
+            winner.failure_count = 0
+            winner.last_used_at = now
+            await session.commit()
+            await session.refresh(winner)
+            return winner
+        raise
 
 
 @router.get(
@@ -153,7 +211,14 @@ async def unregister_push_subscription(
             detail="Push subscription not found or not owned by current user",
         )
 
+    sub_id = sub.id
+    redacted = redact_endpoint(sub.endpoint)
     await session.delete(sub)
     await session.commit()
-    logger.info("Unregistered Web Push subscription %d for user %d", sub.id, current_user.id)
+    logger.info(
+        "Unregistered Web Push subscription %d for user %d (endpoint: %s)",
+        sub_id,
+        current_user.id,
+        redacted,
+    )
     return MessageResponse(message="Push subscription removed successfully")

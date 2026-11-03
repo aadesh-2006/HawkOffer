@@ -16,7 +16,8 @@ flowchart LR
     M14 --> M15["M15: Centralized Monitoring & Fan-Out<br/>(COMPLETED)"]
     M15 --> M15_1["M15.1: Production Safety & Hardening<br/>(COMPLETED)"]
     M15_1 --> M16["M16: Web Push Notifications (RFC 8291)<br/>(COMPLETED)"]
-    M16 --> M17["M17: Public Web Dashboard & Application Tracking"]
+    M16 --> M16_1["M16.1: Push Reliability & Hardening<br/>(COMPLETED)"]
+    M16_1 --> M17["M17: Public Web Dashboard & Application Tracking"]
     M17 --> M18["M18: Zero-Budget Cloud Deployment & Acceptance"]
 ```
 
@@ -187,6 +188,41 @@ flowchart LR
   - Static typing & linting: MyPy and Ruff passed with 0 errors.
   - Frontend production build: Vite compiled cleanly in 2.47s.
   - Zero paid third-party push dependencies.
+
+---
+
+### Milestone 16.1: Web Push Reliability & Security Hardening
+*Status: COMPLETED (Verified across 393 backend tests, 34 frontend tests, 11 new M16.1 hardening tests)*  
+*Objective: Harden subscription ownership, atomic notification claiming, lease heartbeats, and cryptographic VAPID validation.*
+
+- **Delivered Capabilities**:
+  1. **Subscription Ownership & Endpoint Security**:
+     - Strict endpoint validation: requires secure HTTPS scheme, rejects embedded credentials, localhost, loopback, link-local, and private IP addresses.
+     - Endpoint takeover protection: `POST /push/subscribe` rejects attempts by User B to register an endpoint already owned by User A with HTTP `409 Conflict`.
+     - Idempotent upsert: same user re-registering an endpoint refreshes keys and `last_used_at` without duplicate row creation.
+     - Race-condition resilience: handles concurrent registration attempts via database transaction rollback and idempotent recovery.
+     - Redacted logging: endpoints are hashed/masked (`...{suffix}`) in all logs; client auth secrets and private keys are never logged.
+     - Response hygiene: `PushSubscriptionRead` omits raw encryption secrets from public REST responses.
+  2. **Atomic Notification Claiming & Stale Lease Fencing**:
+     - Candidate selection re-validates all eligibility predicates during the `UPDATE ... RETURNING` statement, ensuring absolute mutual exclusion between concurrent workers without race overwrites.
+     - Lease heartbeats: `WebPushDispatcher` renews `delivery_lease_expires_at` prior to making outbound HTTP requests, preventing lease expiration during long-running network batches.
+     - Fenced state updates: every state finalization (`SENT`, `RETRY`, `FAILED`) verifies `delivery_lease_token == token`. Stale or expired workers are rejected from overwriting newer state.
+     - Abandoned worker recovery: notifications stuck in `PROCESSING` whose lease expired are automatically reclaimed and resumed.
+  3. **Explicit Device-Level Delivery Semantics**:
+     - Distinguishes `DELIVERED`, `TRANSIENT_FAILURE`, `PERMANENTLY_INVALID`, and `EXHAUSTED`.
+     - Transient provider failures (HTTP 429, 5xx, timeouts) are labeled `TRANSIENT_FAILURE` and scheduled for retry; only after exhausting `push_max_attempts` are they marked `EXHAUSTED`.
+     - Successfully delivered devices never receive duplicate push deliveries on retries.
+     - In-app notification `status` (`UNREAD`/`READ`) is strictly preserved across all push failures.
+  4. **Cryptographic VAPID Pair Validation**:
+     - Parses P-256 private key and base64url public key using `cryptography`.
+     - Mathematically confirms that the public key corresponds to the private key point on the NIST P-256 (SECP256R1) curve.
+     - Rejects malformed, invalid, or mismatched keys during startup and configuration validation.
+- **Verification Gates Achieved**:
+  - 11 new M16.1 hardening tests passed (`tests/test_m16_1_push_hardening.py`).
+  - Total backend tests: 393 passed (100%).
+  - Total frontend tests: 34 passed (100%).
+  - MyPy and Ruff passed with 0 errors across 126 source files.
+  - Frontend production build clean in 4.20s.
 
 ---
 

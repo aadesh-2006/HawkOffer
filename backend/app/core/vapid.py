@@ -46,6 +46,68 @@ def generate_vapid_keypair() -> VapidKeyPair:
     return VapidKeyPair(public_key=b64url_public, private_key=pem_private)
 
 
+def verify_vapid_keypair_match(pub_key: str, priv_key: str) -> tuple[bool, str]:
+    """Cryptographically parse and confirm that a VAPID public key corresponds to the private key.
+
+    Uses cryptography SECP256R1 and rejects malformed, invalid, or mismatched keys.
+    """
+    if not pub_key or not isinstance(pub_key, str):
+        return False, "Public key must be a non-empty string"
+    if not priv_key or not isinstance(priv_key, str):
+        return False, "Private key must be a non-empty string"
+
+    pub_clean = pub_key.strip()
+    priv_clean = priv_key.strip()
+
+    # 1. Parse Private Key
+    try:
+        if priv_clean.startswith("-----BEGIN"):
+            ec_priv = serialization.load_pem_private_key(priv_clean.encode("utf-8"), password=None)
+        else:
+            # Raw base64/base64url encoded scalar or DER
+            pad = "=" * ((4 - len(priv_clean) % 4) % 4)
+            raw_priv = base64.urlsafe_b64decode((priv_clean + pad).encode("ascii"))
+            if len(raw_priv) == 32:
+                ec_priv = ec.derive_private_key(int.from_bytes(raw_priv, "big"), ec.SECP256R1())
+            else:
+                ec_priv = serialization.load_der_private_key(raw_priv, password=None)
+    except Exception as exc:
+        return False, f"Failed to parse VAPID private key: {exc}"
+
+    if not isinstance(ec_priv, ec.EllipticCurvePrivateKey):
+        return False, "Private key is not an elliptic curve key"
+    if not isinstance(ec_priv.curve, ec.SECP256R1):
+        return False, "VAPID private key must use the NIST P-256 (SECP256R1) curve"
+
+    # 2. Parse Public Key
+    try:
+        pub_pad = "=" * ((4 - len(pub_clean) % 4) % 4)
+        raw_pub = base64.urlsafe_b64decode((pub_clean + pub_pad).encode("ascii"))
+    except Exception as exc:
+        return False, f"Failed to decode base64url public key: {exc}"
+
+    if len(raw_pub) != 65:
+        return False, f"VAPID public key must be 65 bytes uncompressed point (got {len(raw_pub)})"
+    if raw_pub[0] != 0x04:
+        return False, "VAPID public key must start with 0x04 (uncompressed point format)"
+
+    try:
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw_pub)
+    except Exception as exc:
+        return False, f"Failed to load public key point on SECP256R1: {exc}"
+
+    # 3. Confirm mathematical correspondence
+    derived_pub_bytes = ec_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint,
+    )
+
+    if raw_pub != derived_pub_bytes:
+        return False, "VAPID public key does not correspond to the private key"
+
+    return True, "Valid"
+
+
 # Ephemeral in-memory keypair for development/test mode when keys are not explicitly set
 _dev_keypair: VapidKeyPair | None = None
 
@@ -53,8 +115,8 @@ _dev_keypair: VapidKeyPair | None = None
 def get_effective_vapid_keys() -> VapidKeyPair:
     """Resolve the active VAPID keypair.
 
-    In production: Requires explicitly configured HAWKOFFER_VAPID_PUBLIC_KEY and
-    HAWKOFFER_VAPID_PRIVATE_KEY.
+    In production: Requires explicitly configured and mathematically matching
+    HAWKOFFER_VAPID_PUBLIC_KEY and HAWKOFFER_VAPID_PRIVATE_KEY.
     In development/testing: Automatically generates an ephemeral keypair if none is
     configured, ensuring frictionless local testing.
     """
@@ -64,7 +126,13 @@ def get_effective_vapid_keys() -> VapidKeyPair:
     priv = settings.vapid_private_key
 
     if pub and priv:
-        return VapidKeyPair(public_key=pub.strip(), private_key=priv.strip())
+        pub_clean = pub.strip()
+        priv_clean = priv.strip()
+        is_valid, err = verify_vapid_keypair_match(pub_clean, priv_clean)
+        if not is_valid:
+            logger.error("Configured VAPID keypair failed verification: %s", err)
+            raise RuntimeError(f"Configured VAPID keypair is invalid or mismatched: {err}")
+        return VapidKeyPair(public_key=pub_clean, private_key=priv_clean)
 
     if settings.is_production:
         logger.error(
@@ -72,8 +140,8 @@ def get_effective_vapid_keys() -> VapidKeyPair:
             "Set HAWKOFFER_VAPID_PUBLIC_KEY and HAWKOFFER_VAPID_PRIVATE_KEY."
         )
         raise RuntimeError(
-            "VAPID keys are missing in production. Generate them using generate_vapid_keypair() "
-            "and configure HAWKOFFER_VAPID_PUBLIC_KEY and HAWKOFFER_VAPID_PRIVATE_KEY."
+            "CRITICAL: VAPID keys are missing in production environment! "
+            "Configure HAWKOFFER_VAPID_PUBLIC_KEY and HAWKOFFER_VAPID_PRIVATE_KEY."
         )
 
     # Development / Testing fallback
@@ -103,18 +171,13 @@ def get_vapid_claims() -> dict[str, str]:
 
 
 def validate_production_vapid() -> tuple[bool, str]:
-    """Validate that VAPID configuration meets production security standards."""
+    """Validate that VAPID configuration exists and meets production cryptographic standards."""
     if not settings.vapid_public_key:
         return False, "HAWKOFFER_VAPID_PUBLIC_KEY is not configured"
     if not settings.vapid_private_key:
         return False, "HAWKOFFER_VAPID_PRIVATE_KEY is not configured"
 
-    pub = settings.vapid_public_key.strip()
-    priv = settings.vapid_private_key.strip()
-
-    if len(pub) < 64:
-        return False, "HAWKOFFER_VAPID_PUBLIC_KEY is invalid (too short for base64url P-256)"
-    if "PRIVATE KEY" not in priv and len(priv) < 32:
-        return False, "HAWKOFFER_VAPID_PRIVATE_KEY is invalid"
-
-    return True, "Valid"
+    return verify_vapid_keypair_match(
+        settings.vapid_public_key.strip(),
+        settings.vapid_private_key.strip(),
+    )
