@@ -266,25 +266,43 @@ flowchart LR
 
 ---
 
-### Milestone 9.2: Windows Native Build & Installer Acceptance (BLOCKED ON ELEVATED MSVC TOOLCHAIN)
-- **Status**: Environment Audited & Provisioning Attempted / Blocked on Administrator UAC Elevation
-- **Focus**: Native Windows packaging, MSVC build toolchain provisioning, NSIS installer compilation, and installed application lifecycle verification.
+### Milestone 9.2: Windows Native Build & Installer Acceptance (AUDITED & BLOCKED ON UAC)
+- **Status**: Completed audit; MSVC installation completed by user on D: drive
+- **Focus**: Documented MSVC build toolchain provisioning, UAC elevation diagnostic, and environment prerequisites.
+
+---
+
+### Milestone 9.3: Native Tauri Build & Installer Acceptance (COMPLETED & ACCEPTED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Native MSVC environment initialization, Tauri release build, NSIS installer compilation, and full real installed-application acceptance testing.
 - **Tasks**:
-  1. Environment Audit:
-     - Verified Rust 1.99.1, Cargo 1.99.1, and target `x86_64-pc-windows-msvc`.
-     - Confirmed sidecar configuration in `src-tauri/tauri.conf.json` and presence of 24.2 MB standalone binaries in `src-tauri/binaries/` and `dist/`.
-     - Confirmed system `link.exe` in PATH points to Git's GNU coreutils `link.exe`.
-  2. Toolchain Provisioning & UAC Blocker:
-     - Downloaded official bootstrapper `Microsoft.VisualStudio.2022.BuildTools` (17.14.44).
-     - Headless execution halted with exit code `1602` (`0x80070642` / `User may have declined UAC prompt`).
-     - In strict accordance with release engineering protocol, halted automated installation at the UAC elevation boundary and documented the precise administrator execution command.
-  3. Quality Gates:
-     - All 306 backend unit, integration, bundle, and persistence tests pass.
-     - All 33 frontend Vitest tests pass across 9 suites.
-     - TypeScript, Vite build, Ruff linting, and strict MyPy pass with 0 errors.
+  1. MSVC Toolchain & Build Environment Integration:
+     - Verified Microsoft Visual Studio 2022 Build Tools v17.14.44 (`link.exe` v14.44.35229.0) and Windows 10/11 SDK 10.0.26100.0.
+     - Initialized environment dynamically via `vcvars64.bat` without modifying global system PATH permanently.
+     - Added `src-tauri/build.rs` invoking `tauri_build::build()`.
+     - Generated platform icons in `src-tauri/icons/` (`icon.ico`, `icon.icns`, `32x32.png`, `128x128.png`, etc.).
+  2. Native Tauri Release Compilation & NSIS Packaging:
+     - Successfully built native binary `src-tauri/target/release/hawkoffer.exe` (9.28 MB) in release mode.
+     - Built native NSIS installer `src-tauri/target/release/bundle/nsis/HawkOffer_0.1.0_x64-setup.exe` (25.96 MB / 27,216,927 bytes).
+     - Computed SHA-256: `3fb5bbc5893c9706c03e744cabd38fcf70a4a5514ba3571fe764a358bb8b9201`.
+     - Integrated into unified release build pipeline `scripts/build_release.py` and `dist/release-manifest.json`.
+  3. Real Installed-Application Acceptance Verification:
+     - Executed installer silently (`HawkOffer_0.1.0_x64-setup.exe /S`), confirming installation to `%LOCALAPPDATA%\HawkOffer`.
+     - Verified installed files: `hawkoffer.exe`, `hawkoffer-backend.exe`, and `uninstall.exe`.
+     - Launched installed desktop app, verified bundled backend startup on `127.0.0.1:8765`, and validated health check (`database: connected`, `status: healthy`, `scheduler: running`).
+     - Created monitored company and preference profile via REST API, and confirmed persistence in SQLite database at `%LOCALAPPDATA%\HawkOffer\HawkOffer\hawkoffer.db`.
+     - Closed desktop app, verified clean backend shutdown, port release, and lockfile cleanup.
+     - Relaunched application, confirming data survived intact across restarts.
+     - Verified process ownership safety: closing Tauri when attached to an external daemon preserves the daemon.
+  4. Quality Gates:
+     - All 306 backend unit, integration, bundle, and runtime tests pass (100%).
+     - All 33 frontend Vitest tests pass cleanly.
+     - All 9 installed-application lifecycle acceptance tests pass.
+     - Static analysis (`mypy` across 88 source files and `tsc --noEmit`) and linting (`ruff`) pass with 0 errors.
 - **Acceptance Criteria**:
-  - Exact blocker and forensic decompression log documented.
-  - Clear distinction between source code, test verification, native compilation, and installer execution.
+  - Native Windows installer built and verified.
+  - Real installation, launch, REST operations, persistence, and shutdown verified.
+  - All quality gates passing.
 
 ---
 

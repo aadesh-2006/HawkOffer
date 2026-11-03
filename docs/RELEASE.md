@@ -127,24 +127,28 @@ This produces the native Windows installer (`.msi` / `.exe` via NSIS) containing
 
 ---
 
-## 6. Verification Quality Gates & Status (M9.2 Release Engineering Audit)
+## 6. Verification Quality Gates & Status (M9.3 Native Build & Release Sign-Off)
 
-All automated validation and packaging suites pass cleanly:
+All automated validation, native compilation, packaging, and installer lifecycle suites pass cleanly:
 - **Backend Test Suite**: 306 passed (100% pass rate across all 306 tests, including `test_backend_bundle.py`, `test_desktop_runtime.py`, and `test_persistence_lifecycle.py`).
 - **Frontend Test Suite**: 33 passed across 9 test suites (`vitest`).
 - **Type Checking**: `mypy` strict mode passes across all 88 source files with 0 errors; `tsc --noEmit` passes with 0 errors.
 - **Linting**: `ruff` passes with 0 violations.
 - **Vite Production Bundle**: Builds cleanly without errors (`frontend/dist/index.html`, `frontend/dist/assets/`).
-- **PyInstaller Bundled Daemon**: Compiles relocatable 24.2 MB binary `backend/dist/hawkoffer-backend.exe` verified against `/health` and persistence lifecycle without Python.
-- **Unified Release Pipeline**: `scripts/build_release.py` runs end-to-end, producing `dist/release-manifest.json` with SHA-256 integrity checksums.
-- **Native Toolchain Status & Blocker**:
-  - Rust 1.99.1 & Cargo 1.99.1 verified.
-  - Native Windows compilation (`cargo build` / `tauri build`) requires Microsoft Visual C++ Build Tools (`Microsoft.VisualStudio.2022.BuildTools` with "Desktop development with C++" workload).
-  - Unattended installation halted at Windows UAC elevation boundary (`0x80070642 / Exit Code 1602`). To complete MSVC provisioning, run the cached bootstrapper in an elevated PowerShell prompt:
-    ```powershell
-    & "C:\Users\Aadesh\AppData\Local\Temp\WinGet\Microsoft.VisualStudio.2022.BuildTools.17.14.44\vs_BuildTools.exe" --quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
-    ```
-    Followed by native packaging:
-    ```powershell
-    cd frontend && npx @tauri-apps/cli build
-    ```
+- **PyInstaller Bundled Daemon**: Relocatable 24.2 MB binary `backend/dist/hawkoffer-backend.exe` deployed as Tauri sidecar to `src-tauri/binaries/hawkoffer-backend-x86_64-pc-windows-msvc.exe`.
+- **MSVC Toolchain & Environment**: Microsoft Visual Studio Build Tools 2022 v17.14.44 configured with MSVC Linker v14.44.35229.0 and Windows SDK 10.0.26100.0.
+- **Native Tauri Release Executable**: Compiled via `cargo build --release` (`src-tauri/target/release/hawkoffer.exe`, 9.28 MB / 9,281,024 bytes).
+- **Native NSIS Installer Generation**: Produced `src-tauri/target/release/bundle/nsis/HawkOffer_0.1.0_x64-setup.exe` and copied to `dist/HawkOffer_0.1.0_x64-setup.exe`:
+  - **Installer Size**: 25.96 MB (27,216,927 bytes).
+  - **Installer SHA-256**: `3fb5bbc5893c9706c03e744cabd38fcf70a4a5514ba3571fe764a358bb8b9201`.
+- **Actual Installer Execution**: Executed silent install (`HawkOffer_0.1.0_x64-setup.exe /S`) verifying installation to `%LOCALAPPDATA%\HawkOffer\` (`hawkoffer.exe`, `hawkoffer-backend.exe`, `uninstall.exe`).
+- **Installed-Application Acceptance Verification**: Ran automated acceptance harness (`scripts/test_installed_app.py`) with 9/9 stages passing:
+  1. Spawns installed `hawkoffer.exe` and verifies backend sidecar startup listening on `127.0.0.1:8765`.
+  2. Bounded readiness probe succeeds with `status: healthy`, `database: connected`, `scheduler: running`.
+  3. REST API operations succeed (company and preference profile creation).
+  4. SQLite data persistence verified in `%LOCALAPPDATA%\HawkOffer\HawkOffer\hawkoffer.db`.
+  5. Clean shutdown verified upon Tauri window termination (backend child process exits, lockfile deleted).
+  6. Relaunch test confirms data survives cold restart.
+  7. Process ownership safety: pre-existing external backend daemon is preserved when attached Tauri instance terminates.
+  8. External daemon stopped cleanly via CLI action.
+  9. Complete end-to-end acceptance passed 100%.
