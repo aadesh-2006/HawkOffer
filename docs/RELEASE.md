@@ -152,3 +152,33 @@ All automated validation, native compilation, packaging, and installer lifecycle
   7. Process ownership safety: pre-existing external backend daemon is preserved when attached Tauri instance terminates.
   8. External daemon stopped cleanly via CLI action.
   9. Complete end-to-end acceptance passed 100%.
+
+---
+
+## 7. Verification Quality Gates & Status (M11 Real-World Release Validation)
+
+Comprehensive end-to-end validation across the complete installed desktop application and local semantic AI matching:
+- **Backend Test Suite**: **323 passed** (100% pass rate across all 323 tests, including `test_m11_real_world_validation.py`, `test_semantic_quality_audit.py`, `test_backend_bundle.py`, `test_desktop_workflow.py`, and `test_persistence_lifecycle.py`).
+- **Frontend Test Suite**: **34 passed** across all 9 test suites (`vitest`).
+- **Type Checking**: `mypy` strict mode passes across all 98 backend source files with 0 errors; `tsc --noEmit` passes with 0 errors.
+- **Linting & Formatting**: `ruff` check and format pass across all 98 backend files with 0 violations.
+- **Vite Production Bundle**: Builds cleanly without errors (`frontend/dist/index.html`, `frontend/dist/assets/`).
+- **PyInstaller Bundled Daemon**: Relocatable 51.7 MB binary `backend/dist/hawkoffer-backend.exe` (SHA-256: `29385ac69be314175c6bc179ebf309d50b7fd3f13a09af4050cca66fbf2eb5f3`) containing ONNX Runtime, Tokenizers, and NumPy.
+- **Native NSIS Installer**: Produced `dist/HawkOffer_0.1.0_x64-setup.exe`:
+  - **Installer Size**: 53.57 MB (56,167,550 bytes).
+  - **Installer SHA-256**: `498814dc1e04a7cc116c670cdb6ce35dc11446a7a14828059e3a6a3beb0cc26b`.
+- **Silent Installation & Upgrades**: Executed silent install (`HawkOffer_0.1.0_x64-setup.exe /S`) verifying installation to `%LOCALAPPDATA%\HawkOffer\` (`hawkoffer.exe`, `hawkoffer-backend.exe`, `uninstall.exe`). Verified re-installing over existing installation updates binaries without modifying or resetting `%LOCALAPPDATA%\HawkOffer\HawkOffer\hawkoffer.db`.
+- **Uninstaller Safety**: Executed `uninstall.exe /S` verifying that application binaries are removed while user data and SQLite database files are strictly preserved.
+- **12-Step Real-World User Workflow Verified**:
+  1. Boot readiness gate verified on loopback (`/api/v1/health`).
+  2. Preference profile definition with resume text, hard filters, and semantic toggle.
+  3. Model lifecycle inspection and on-demand fallback operation.
+  4. Controlled 5-tier job ingestion and deduplication.
+  5. Discovery worker execution proving authoritative hard-filter precedence (ineligible jobs never queued).
+  6. Modulo-5 backlog drain and notification deduplication.
+  7. Semantic match explainability and embedding cache persistence.
+  8. Notification read/unread state mutation and unread counter decrement.
+  9. Profile criteria modification and historical keyset reevaluation.
+  10. Job content update and embedding cache invalidation.
+  11. Cold application restart and full data persistence reload.
+  12. Process ownership safety: external pre-existing daemons preserved upon Tauri window close.

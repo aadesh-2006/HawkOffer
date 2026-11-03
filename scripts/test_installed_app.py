@@ -117,7 +117,7 @@ def main() -> int:
     print(f"   [PASS] Recorded backend PID: {spawned_pid}")
 
     # Step 6: Create Company and Preference Profile via REST API
-    print("\n5. Creating monitored company and preference profile via REST API...")
+    print("\n5. Creating monitored company and preference profile with semantic AI via REST API...")
     ts = int(time.time())
     test_company = {
         "name": f"Acme Robotics {ts}",
@@ -134,11 +134,19 @@ def main() -> int:
         "preferred_roles": ["Backend Engineer", "Systems Engineer"],
         "preferred_skills": ["python", "rust", "sqlite"],
         "minimum_match_score": 75.0,
+        "resume_text": "Staff Platform Engineer with deep expertise in Python, Rust, SQLite, and distributed systems.",
+        "semantic_enabled": True,
         "is_active": True,
     }
     profile_resp = http_post("http://127.0.0.1:8765/api/v1/profiles", test_profile)
     profile_id = profile_resp["id"]
-    print(f"   [PASS] Created preference profile: id={profile_id}, name={profile_resp['name']}")
+    assert profile_resp.get("semantic_enabled") is True
+    print(f"   [PASS] Created preference profile with semantic resume: id={profile_id}, name={profile_resp['name']}")
+
+    # Check semantic model status endpoint
+    sem_status = http_get("http://127.0.0.1:8765/api/v1/system/semantic-model")
+    assert sem_status.get("dimension") == 384
+    print(f"   [PASS] Semantic model status endpoint verified (dimension={sem_status.get('dimension')}, status={sem_status.get('status')})")
 
     # Step 7: Verify data persistence on disk
     print("\n6. Verifying database existence on disk...")
@@ -172,8 +180,11 @@ def main() -> int:
 
     profiles_data = http_get("http://127.0.0.1:8765/api/v1/profiles")
     profiles = profiles_data.get("items", profiles_data if isinstance(profiles_data, list) else [])
-    assert any(p["id"] == profile_id for p in profiles), "Profile data was lost across restarts!"
-    print(f"   [PASS] Profile persisted cleanly across application restart: {profiles[0]['name']}")
+    matched_prof = next((p for p in profiles if p["id"] == profile_id), None)
+    assert matched_prof is not None, "Profile data was lost across restarts!"
+    assert matched_prof.get("semantic_enabled") is True
+    assert "Staff Platform" in (matched_prof.get("resume_text") or "")
+    print(f"   [PASS] Profile with semantic resume persisted cleanly across application restart: {matched_prof['name']}")
 
     tauri_proc2.terminate()
     try:

@@ -359,6 +359,45 @@ flowchart LR
 
 ---
 
+### Milestone 11: Real-World End-to-End Release Validation (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Validation of HawkOffer as a real installed Windows desktop application across clean installation, daily workflow, semantic matching, process ownership safety, and database upgrade persistence.
+- **Tasks**:
+  1. Native Windows NSIS Installer Compilation & Silent Installation:
+     - Built updated native Tauri NSIS installer (`dist/HawkOffer_0.1.0_x64-setup.exe`, 53.57 MB / 56,167,550 bytes, SHA-256: `498814dc1e04a7cc116c670cdb6ce35dc11446a7a14828059e3a6a3beb0cc26b`).
+     - Verified silent non-elevated installation to `%LOCALAPPDATA%\HawkOffer` (`hawkoffer.exe`, `hawkoffer-backend.exe`, `uninstall.exe`).
+     - Validated uninstaller safety: running `uninstall.exe /S` cleanly removes executable binaries while safely preserving user data in `%LOCALAPPDATA%\HawkOffer\HawkOffer\hawkoffer.db`.
+     - Validated installer upgrade safety: re-running the installer updates binaries without deleting or modifying user data.
+  2. Full 12-Step Real-World User Workflow (`backend/tests/test_m11_real_world_validation.py`):
+     - Step 1: Health readiness gate probe on loopback (`/api/v1/health`).
+     - Step 2: Preference profile definition with resume text, hard constraints, and semantic matching toggle.
+     - Step 3: Model lifecycle inspection (`/api/v1/system/semantic-model`) and toggle operations.
+     - Step 4: Company registration with controlled 5-tier test jobs (strong match, keyword violation, location violation, cohort violation, partial match).
+     - Step 5: On-demand company scan trigger and duplicate ingestion protection.
+     - Step 6: Discovery worker execution proving authoritative hard-filter precedence (ineligible jobs never queued).
+     - Step 7: Modulo-5 backlog drain and notification deduplication.
+     - Step 8: Match explainability reporting (`/api/v1/jobs/{id}/match`) and embedding cache persistence.
+     - Step 9: Notification read/unread state mutation and unread count decrement.
+     - Step 10: Profile criteria modification (revision bump) and historical keyset reevaluation.
+     - Step 11: Job content modification and embedding cache invalidation.
+     - Step 12: Application cold restart and full entity persistence verification on SQLite WAL.
+  3. Installed Application Lifecycle & Ownership Safety (`scripts/test_installed_app.py`):
+     - Verified 9/9 installed application acceptance stages.
+     - Proved external daemon preservation: terminating the desktop window does not kill external pre-existing daemons.
+  4. Migration Lifecycle & Math Invariants:
+     - Verified Alembic migration execution on fresh and existing databases (`test_m11_database_migration_fresh_and_existing`).
+     - Verified embedding vector invariants: unit L2 normalization ($1.0 \pm 10^{-4}$), strictly finite numbers (zero NaN/Inf), and blank/whitespace input sanitization to zero vectors.
+  5. Automated Quality Gates:
+     - Backend: 323 / 323 pytest tests passed (100%).
+     - Frontend: 34 / 34 Vitest tests passed (100%), production build passed.
+     - Static Analysis & Lint: `mypy` strict mode passed across 98 files; `ruff` check and format passed across 98 files.
+- **Acceptance Criteria**:
+  - Complete 12-step user workflow verified on real SQLite WAL persistence.
+  - Native Windows installer built, installed, and verified on real application binaries.
+  - Zero regressions across all backend and frontend quality gates.
+
+---
+
 ## Engineering Guidelines & Rules
 
 1. **Step-by-Step Approval**: Do not advance to subsequent milestones without explicit review and approval of the current milestone's deliverables.

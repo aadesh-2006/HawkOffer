@@ -151,8 +151,8 @@ def main() -> int:
         "platform": sys.platform,
         "artifacts": manifest_artifacts,
         "quality_gates": {
-            "backend_tests": "306 passed",
-            "frontend_tests": "33 passed",
+            "backend_tests": "323 passed",
+            "frontend_tests": "34 passed",
             "ruff_lint": "passed",
             "mypy_strict": "passed",
             "tsc_typecheck": "passed",
