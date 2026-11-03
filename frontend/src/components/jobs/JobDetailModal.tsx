@@ -5,9 +5,13 @@ import {
   Building2,
   Tag,
   Hash,
+  Sparkles,
+  CheckCircle2,
+  AlertCircle,
+  Cpu,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
-import { JobRead, CompanyRead } from "../../types/api";
+import { JobRead, CompanyRead, JobMatchDetail } from "../../types/api";
 import { jobsApi, companiesApi } from "../../services/api";
 import { Modal } from "../common/Modal";
 import { Badge } from "../common/Badge";
@@ -18,6 +22,7 @@ export const JobDetailModal: React.FC = () => {
   const { selectedJobId, setSelectedJobId, showToast } = useApp();
   const [job, setJob] = useState<JobRead | null>(null);
   const [company, setCompany] = useState<CompanyRead | null>(null);
+  const [matchDetail, setMatchDetail] = useState<JobMatchDetail | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +30,7 @@ export const JobDetailModal: React.FC = () => {
     if (!selectedJobId) {
       setJob(null);
       setCompany(null);
+      setMatchDetail(null);
       setError(null);
       return;
     }
@@ -47,6 +53,18 @@ export const JobDetailModal: React.FC = () => {
           }
         } catch {
           // Company lookup non-fatal
+        }
+
+        // Fetch AI Match Detail (if active profile available)
+        try {
+          const fetchedMatch = await jobsApi.getMatchDetail(selectedJobId);
+          if (isMounted) {
+            setMatchDetail(fetchedMatch);
+          }
+        } catch {
+          if (isMounted) {
+            setMatchDetail(null);
+          }
         }
       } catch (err: unknown) {
         if (!isMounted) return;
@@ -191,6 +209,116 @@ export const JobDetailModal: React.FC = () => {
               </span>
             </div>
           </div>
+
+          {/* AI Semantic Fit & Relevance Analysis */}
+          {matchDetail && (
+            <div className="p-4 bg-gradient-to-br from-violet-50/70 to-slate-50 dark:from-violet-950/20 dark:to-slate-900 rounded-xl border border-violet-200 dark:border-violet-900/40 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                  <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wider">
+                    Semantic Matching &amp; Fit Analysis
+                  </h4>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
+                      matchDetail.relevance_tier === "EXCELLENT"
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-300"
+                        : matchDetail.relevance_tier === "HIGH"
+                        ? "bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border-teal-300"
+                        : matchDetail.relevance_tier === "MEDIUM"
+                        ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border-amber-300"
+                        : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-300"
+                    }`}
+                  >
+                    {matchDetail.relevance_tier} MATCH
+                  </span>
+                  <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+                    {matchDetail.semantic_score != null
+                      ? `${Math.round(matchDetail.semantic_score * 100)}% Similarity`
+                      : "Semantic Matching Inactive"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Score Progress Bar */}
+              <div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-violet-600 h-2 rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.max(0, (matchDetail.semantic_score ?? 0) * 100)
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                  <span>Deterministic Score: {Math.round(matchDetail.deterministic_score)}%</span>
+                  <span>Blended Rank Score: {Math.round(matchDetail.blended_score)}%</span>
+                </div>
+              </div>
+
+              {/* Shared and Missing Skills Breakdown */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs">
+                {/* Shared Skills */}
+                <div className="space-y-1">
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Shared / Matching Skills ({matchDetail.shared_skills.length})
+                  </span>
+                  {matchDetail.shared_skills.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {matchDetail.shared_skills.map((skill, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 rounded text-[11px] font-medium"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-slate-400 text-[11px] italic">No direct keyword overlap</span>
+                  )}
+                </div>
+
+                {/* Missing Skills */}
+                <div className="space-y-1">
+                  <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+                    <AlertCircle className="w-3.5 h-3.5" /> Missing Requirements ({matchDetail.missing_skills.length})
+                  </span>
+                  {matchDetail.missing_skills.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {matchDetail.missing_skills.map((skill, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 rounded text-[11px] font-medium"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-slate-400 text-[11px] italic">No missing required skills</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Model and Sparse Description Notes */}
+              <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-violet-100 dark:border-violet-900/30">
+                <span className="flex items-center gap-1">
+                  <Cpu className="w-3 h-3 text-slate-400" /> Model: all-MiniLM-L6-v2 (Local CPU)
+                </span>
+                {matchDetail.is_sparse_description && (
+                  <span className="text-amber-500 font-medium">
+                    ⚠️ Short description; score confidence adjusted
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Job Description */}
           <div className="space-y-2">

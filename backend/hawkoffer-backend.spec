@@ -47,10 +47,18 @@ hidden_imports = [
     "apscheduler.schedulers.asyncio",
     "apscheduler.triggers.interval",
     "apscheduler.triggers.date",
+    "numpy",
+    "tokenizers",
+    "onnxruntime",
 ]
 
 hidden_imports += collect_submodules("app")
 hidden_imports += collect_submodules("alembic")
+hidden_imports += collect_submodules("tokenizers")
+hidden_imports += collect_submodules("onnxruntime")
+
+datas += collect_data_files("tokenizers")
+datas += collect_data_files("onnxruntime")
 
 a = Analysis(
     ["app/bundle_entry.py"],
@@ -70,9 +78,11 @@ a = Analysis(
         "tkinter",
         "IPython",
         "matplotlib",
-        "numpy",
         "scipy",
         "pandas",
+        "torch",
+        "torchvision",
+        "torchaudio",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

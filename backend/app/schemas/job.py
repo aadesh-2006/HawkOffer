@@ -54,6 +54,27 @@ class JobRead(JobBase):
     last_seen_at: datetime
     created_at: datetime
     updated_at: datetime
+    semantic_score: float | None = None
+    match_tier: str | None = None
+    shared_skills: list[str] | None = None
+    missing_skills: list[str] | None = None
+
+
+class JobMatchDetail(BaseModel):
+    """Detailed explainable matching result for a job against a preference profile."""
+
+    job_id: int
+    profile_id: int
+    eligibility_status: str
+    deterministic_score: float
+    semantic_score: float | None = None
+    blended_score: float
+    relevance_tier: str
+    shared_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    is_sparse_description: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
 class JobFilterParams(BaseModel):

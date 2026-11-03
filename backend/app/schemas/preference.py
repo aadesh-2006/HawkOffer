@@ -21,6 +21,12 @@ class PreferenceProfileBase(BaseModel):
     required_locations: list[str] = Field(default_factory=list)
     require_graduation_year_match: bool = Field(default=False)
     minimum_match_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    resume_text: str | None = Field(
+        None, description="Optional plain text resume or background summary"
+    )
+    semantic_enabled: bool = Field(
+        default=True, description="Whether local semantic matching is enabled"
+    )
     is_active: bool = Field(default=True)
 
 
@@ -44,6 +50,8 @@ class PreferenceProfileUpdate(BaseModel):
     required_locations: list[str] | None = None
     require_graduation_year_match: bool | None = None
     minimum_match_score: float | None = Field(None, ge=0.0, le=100.0)
+    resume_text: str | None = None
+    semantic_enabled: bool | None = None
     is_active: bool | None = None
 
 

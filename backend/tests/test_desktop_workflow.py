@@ -171,9 +171,12 @@ async def test_complete_desktop_user_workflow(tmp_path: Path) -> None:
     # =========================================================================
     # STEP 2: Start backend via application factory and verify readiness
     # =========================================================================
-    async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+        ) as client,
+    ):
         health_res = await client.get("/api/v1/health")
         assert health_res.status_code == 200, health_res.text
         health_data = health_res.json()
@@ -324,9 +327,7 @@ async def test_complete_desktop_user_workflow(tmp_path: Path) -> None:
             )
             assert len(promoted_backlog) == 1
 
-            notifications = (
-                (await verify_session.execute(select(Notification))).scalars().all()
-            )
+            notifications = (await verify_session.execute(select(Notification))).scalars().all()
             assert len(notifications) == 1
             assert notifications[0].status == NotificationStatus.UNREAD
             promoted_notif_id = notifications[0].id

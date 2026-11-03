@@ -9,8 +9,10 @@ import {
   CompanyUpdate,
   HealthResponse,
   JobFilterParams,
+  JobMatchDetail,
   JobRead,
   MessageResponse,
+  ModelStatusInfo,
   MonitoringStatusResponse,
   NotificationRead,
   PaginatedResponse,
@@ -116,6 +118,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const systemApi = {
   getHealth: () => request<HealthResponse>("/health"),
   getStatus: () => request<SystemStatusResponse>("/system/status"),
+  getSemanticModelStatus: () => request<ModelStatusInfo>("/system/semantic-model"),
+  downloadSemanticModel: () =>
+    request<ModelStatusInfo>("/system/semantic-model/download", {
+      method: "POST",
+    }),
+  toggleSemanticModel: (enabled: boolean) =>
+    request<ModelStatusInfo>(`/system/semantic-model/toggle?enabled=${enabled}`, {
+      method: "POST",
+    }),
 };
 
 // --------------------------------------------------------------------------
@@ -230,6 +241,9 @@ export const jobsApi = {
   },
 
   get: (id: number) => request<JobRead>(`/jobs/${id}`),
+
+  getMatchDetail: (jobId: number, profileId?: number) =>
+    request<JobMatchDetail>(`/jobs/${jobId}/match${profileId ? `?profile_id=${profileId}` : ""}`),
 };
 
 // --------------------------------------------------------------------------

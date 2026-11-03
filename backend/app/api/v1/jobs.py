@@ -3,12 +3,15 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.filtering.engine import JobFilteringEngine
+from app.models.preference import PreferenceProfile
 from app.repositories.job_repo import JobRepository
 from app.schemas.common import PaginatedResponse
-from app.schemas.job import JobFilterParams, JobRead
+from app.schemas.job import JobFilterParams, JobMatchDetail, JobRead
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -25,6 +28,9 @@ async def list_jobs(
     ] = None,
     search: Annotated[
         str | None, Query(description="Keyword search in title, location, department")
+    ] = None,
+    profile_id: Annotated[
+        int | None, Query(description="Score relevance against specific profile ID")
     ] = None,
     limit: Annotated[int, Query(description="Max items to return", ge=1, le=500)] = 50,
     offset: Annotated[int, Query(description="Pagination offset", ge=0)] = 0,
@@ -43,8 +49,40 @@ async def list_jobs(
     repo = JobRepository(db)
     items = await repo.filter_jobs(params)
     total = await repo.count_filtered(params)
+
+    # Optional profile evaluation for semantic scoring badges
+    profile = None
+    if profile_id is not None:
+        prof_res = await db.execute(
+            select(PreferenceProfile).where(PreferenceProfile.id == profile_id)
+        )
+        profile = prof_res.scalar_one_or_none()
+    else:
+        # Load active profile by default if exists
+        prof_res = await db.execute(
+            select(PreferenceProfile).where(PreferenceProfile.is_active.is_(True)).limit(1)
+        )
+        profile = prof_res.scalar_one_or_none()
+
+    engine = JobFilteringEngine()
+    job_reads: list[JobRead] = []
+
+    for item in items:
+        job_read = JobRead.model_validate(item)
+        if profile and getattr(profile, "semantic_enabled", True):
+            try:
+                eval_res = engine.evaluate(item, profile)
+                if eval_res.semantic_match:
+                    job_read.semantic_score = eval_res.semantic_match.similarity_score
+                    job_read.match_tier = eval_res.semantic_match.relevance_tier
+                    job_read.shared_skills = eval_res.semantic_match.shared_skills
+                    job_read.missing_skills = eval_res.semantic_match.missing_skills
+            except Exception:
+                pass
+        job_reads.append(job_read)
+
     return PaginatedResponse[JobRead](
-        items=[JobRead.model_validate(item) for item in items],
+        items=job_reads,
         total=total,
         limit=limit,
         offset=offset,
@@ -65,3 +103,61 @@ async def get_job(
             detail=f"Job with ID {job_id} not found",
         )
     return JobRead.model_validate(job)
+
+
+@router.get("/{job_id}/match", response_model=JobMatchDetail)
+async def get_job_match_detail(
+    job_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    profile_id: Annotated[int | None, Query(description="Target preference profile ID")] = None,
+) -> JobMatchDetail:
+    """Evaluate explainable deterministic and semantic match for a specific job."""
+    repo = JobRepository(db)
+    job = await repo.get_by_id(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job with ID {job_id} not found",
+        )
+
+    profile = None
+    if profile_id is not None:
+        prof_res = await db.execute(
+            select(PreferenceProfile).where(PreferenceProfile.id == profile_id)
+        )
+        profile = prof_res.scalar_one_or_none()
+    else:
+        prof_res = await db.execute(
+            select(PreferenceProfile).where(PreferenceProfile.is_active.is_(True)).limit(1)
+        )
+        profile = prof_res.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active preference profile found to match against",
+        )
+
+    engine = JobFilteringEngine()
+    eval_res = engine.evaluate(job, profile)
+
+    # Collect human-readable explainability reasons
+    reasons: list[str] = [r.message for r in eval_res.matched_criteria]
+    for r in eval_res.failed_criteria:
+        reasons.append(f"Hard constraint unmet: {r.message}")
+
+    sem = eval_res.semantic_match
+    return JobMatchDetail(
+        job_id=job.id,
+        profile_id=profile.id,
+        eligibility_status=eval_res.status.value,
+        deterministic_score=round(eval_res.score, 1),
+        semantic_score=round(sem.similarity_score, 1) if sem else None,
+        blended_score=round(sem.blended_score, 1) if sem else round(eval_res.score, 1),
+        relevance_tier=sem.relevance_tier if sem else "Deterministic Only",
+        shared_skills=sem.shared_skills if sem else [],
+        missing_skills=sem.missing_skills if sem else [],
+        is_sparse_description=sem.is_sparse_description if sem else False,
+        reasons=reasons,
+        score_breakdown=eval_res.score_breakdown,
+    )

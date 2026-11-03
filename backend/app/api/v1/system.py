@@ -15,6 +15,8 @@ from app.models.notification import Notification
 from app.scheduler.orchestrator import MonitoringOrchestrator
 from app.schemas.common import HealthResponse, SystemStatusResponse
 from app.schemas.notification import NotificationStatus
+from app.services.semantic.model_manager import SemanticModelManager
+from app.services.semantic.models import ModelStatusInfo
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,51 @@ async def health_check(
         scheduler=scheduler_status,
         timestamp=datetime.now(UTC),
     )
+
+
+@router.get(
+    "/system/semantic-model",
+    response_model=ModelStatusInfo,
+    status_code=status.HTTP_200_OK,
+    summary="Semantic model status",
+    description="Returns the status, path, and readiness of the local AI embedding model.",
+)
+async def get_semantic_model_status() -> ModelStatusInfo:
+    """Retrieve status and download progress of the local embedding model."""
+    manager = SemanticModelManager.get_instance()
+    return manager.get_status()
+
+
+@router.post(
+    "/system/semantic-model/download",
+    response_model=ModelStatusInfo,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Trigger local model download",
+    description="Initiates background download of the local ONNX sentence embedding model assets.",
+)
+async def download_semantic_model() -> ModelStatusInfo:
+    """Trigger background download of the local all-MiniLM-L6-v2 ONNX model."""
+    import asyncio
+
+    manager = SemanticModelManager.get_instance()
+    current_status = manager.get_status()
+    if not current_status.is_ready and current_status.status.value != "DOWNLOADING":
+        asyncio.create_task(manager.download_model())
+    return manager.get_status()
+
+
+@router.post(
+    "/system/semantic-model/toggle",
+    response_model=ModelStatusInfo,
+    status_code=status.HTTP_200_OK,
+    summary="Toggle semantic matching",
+    description="Enable or disable local semantic AI matching across the application.",
+)
+async def toggle_semantic_model(enabled: bool = True) -> ModelStatusInfo:
+    """Enable or disable the local semantic embedding model."""
+    manager = SemanticModelManager.get_instance()
+    manager.set_enabled(enabled)
+    return manager.get_status()
 
 
 @router.get(

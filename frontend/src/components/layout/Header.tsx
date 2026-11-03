@@ -1,7 +1,9 @@
 import React from "react";
-import { RefreshCw, Moon, Sun, Monitor, Wifi, WifiOff } from "lucide-react";
+import { RefreshCw, Moon, Sun, Monitor, Wifi, WifiOff, Sparkles, Download } from "lucide-react";
 import { useApp, TabId } from "../../context/AppContext";
 import { Button } from "../common/Button";
+import { systemApi } from "../../services/api";
+import { ModelStatusInfo } from "../../types/api";
 
 const TAB_TITLES: Record<TabId, { title: string; subtitle: string }> = {
   dashboard: {
@@ -46,11 +48,39 @@ export const Header: React.FC = () => {
   } = useApp();
 
   const [refreshing, setRefreshing] = React.useState(false);
+  const [modelStatus, setModelStatus] = React.useState<ModelStatusInfo | null>(null);
+  const [isDownloadingModel, setIsDownloadingModel] = React.useState(false);
+
+  const fetchModelStatus = React.useCallback(async () => {
+    if (!isOnline) return;
+    try {
+      const status = await systemApi.getSemanticModelStatus();
+      setModelStatus(status);
+    } catch {
+      // Non-fatal
+    }
+  }, [isOnline]);
+
+  React.useEffect(() => {
+    fetchModelStatus();
+  }, [fetchModelStatus]);
+
+  const handleDownloadModel = async () => {
+    setIsDownloadingModel(true);
+    try {
+      const res = await systemApi.downloadSemanticModel();
+      setModelStatus(res);
+    } catch (err) {
+      console.error("Failed to trigger model download:", err);
+    } finally {
+      setIsDownloadingModel(false);
+    }
+  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await refreshAll();
+      await Promise.all([refreshAll(), fetchModelStatus()]);
     } finally {
       setRefreshing(false);
     }
@@ -102,6 +132,40 @@ export const Header: React.FC = () => {
             <RefreshCw className={`w-3 h-3 ${isConnecting ? "animate-spin" : ""}`} />
           </button>
         </div>
+
+        {/* AI Model Status Pill */}
+        {isOnline && modelStatus && (
+          <div
+            data-testid="ai-model-status-pill"
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
+              modelStatus.status === "READY"
+                ? "bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800"
+                : modelStatus.status === "DOWNLOADING"
+                ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800"
+                : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+            <span>
+              {modelStatus.status === "READY"
+                ? `Local AI: ONNX (${modelStatus.model_name})`
+                : modelStatus.status === "DOWNLOADING"
+                ? `Downloading AI Model (${Math.round(modelStatus.download_progress * 100)}%)`
+                : "Local AI: Fallback (Hash)"}
+            </span>
+            {modelStatus.status === "NOT_DOWNLOADED" && (
+              <button
+                onClick={handleDownloadModel}
+                disabled={isDownloadingModel}
+                className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-600 text-white text-[10px] font-semibold hover:bg-violet-700 transition-colors"
+                title="Download 22MB ONNX model for high-precision semantic matching"
+              >
+                <Download className="w-2.5 h-2.5" />
+                {isDownloadingModel ? "Fetching..." : "Download ONNX"}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Global Refresh Button */}
         <Button

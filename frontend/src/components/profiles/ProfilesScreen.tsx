@@ -10,6 +10,8 @@ import {
   Ban,
   GraduationCap,
   Info,
+  Sparkles,
+  FileText,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import {
@@ -43,6 +45,8 @@ export const ProfilesScreen: React.FC = () => {
   const [formExclusions, setFormExclusions] = useState<string>("");
   const [formGradYear, setFormGradYear] = useState<string>("");
   const [formScoreThreshold, setFormScoreThreshold] = useState<number>(70);
+  const [formResumeText, setFormResumeText] = useState<string>("");
+  const [formSemanticEnabled, setFormSemanticEnabled] = useState<boolean>(true);
   const [formIsActive, setFormIsActive] = useState<boolean>(true);
   const [formSubmitting, setFormSubmitting] = useState<boolean>(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -72,6 +76,8 @@ export const ProfilesScreen: React.FC = () => {
     setFormExclusions("");
     setFormGradYear("");
     setFormScoreThreshold(70);
+    setFormResumeText("");
+    setFormSemanticEnabled(true);
     setFormIsActive(true);
     setFormError(null);
     setIsAddModalOpen(true);
@@ -86,6 +92,8 @@ export const ProfilesScreen: React.FC = () => {
     setFormExclusions((p.excluded_keywords || []).join(", "));
     setFormGradYear(p.graduation_year ? String(p.graduation_year) : "");
     setFormScoreThreshold(p.minimum_match_score || 0);
+    setFormResumeText(p.resume_text || "");
+    setFormSemanticEnabled(p.semantic_enabled ?? true);
     setFormIsActive(p.is_active);
     setFormError(null);
   };
@@ -116,6 +124,8 @@ export const ProfilesScreen: React.FC = () => {
         excluded_keywords: parseCommaList(formExclusions),
         graduation_year: gradYearNum,
         minimum_match_score: Number(formScoreThreshold),
+        resume_text: formResumeText.trim() || null,
+        semantic_enabled: formSemanticEnabled,
         is_active: formIsActive,
       };
 
@@ -152,6 +162,8 @@ export const ProfilesScreen: React.FC = () => {
         excluded_keywords: parseCommaList(formExclusions),
         graduation_year: gradYearNum,
         minimum_match_score: Number(formScoreThreshold),
+        resume_text: formResumeText.trim() || null,
+        semantic_enabled: formSemanticEnabled,
         is_active: formIsActive,
       };
 
@@ -260,6 +272,12 @@ export const ProfilesScreen: React.FC = () => {
                       <Badge variant="brand" size="sm">
                         v{profile.revision}
                       </Badge>
+                      {profile.semantic_enabled && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300 border border-violet-200 dark:border-violet-800">
+                          <Sparkles className="w-3 h-3 text-violet-500" />
+                          AI Match
+                        </span>
+                      )}
                       <button
                         onClick={() => handleToggleActive(profile)}
                         className="cursor-pointer focus:outline-hidden"
@@ -394,6 +412,19 @@ export const ProfilesScreen: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* Resume / Background text indicator */}
+                  {profile.resume_text && (
+                    <div className="space-y-1">
+                      <span className="font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-violet-600 dark:text-violet-400">
+                        <FileText className="w-3.5 h-3.5" /> Resume / Background
+                      </span>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 line-clamp-2 bg-slate-50 dark:bg-slate-800/60 p-2 rounded border border-slate-100 dark:border-slate-800 italic">
+                        "{profile.resume_text.slice(0, 140)}
+                        {profile.resume_text.length > 140 ? "..." : ""}"
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -518,6 +549,44 @@ export const ProfilesScreen: React.FC = () => {
                 value={formScoreThreshold}
                 onChange={(e) => setFormScoreThreshold(Number(e.target.value))}
                 className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-teal-600 mt-2"
+              />
+            </div>
+          </div>
+
+          {/* AI Semantic Matching & Resume */}
+          <div className="p-3.5 bg-violet-50/60 dark:bg-violet-950/20 border border-violet-100 dark:border-violet-900/40 rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                AI Semantic Matching
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="add_semantic_enabled"
+                  checked={formSemanticEnabled}
+                  onChange={(e) => setFormSemanticEnabled(e.target.checked)}
+                  className="rounded text-violet-600 focus:ring-violet-500 h-4 w-4 border-slate-300 dark:border-slate-700"
+                />
+                <label
+                  htmlFor="add_semantic_enabled"
+                  className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+                >
+                  Enable Semantic Ranking
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Candidate Resume / Background Text (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={formResumeText}
+                onChange={(e) => setFormResumeText(e.target.value)}
+                placeholder="Paste summary of experience, projects, skills, and background for local AI semantic embedding comparison..."
+                className="w-full text-xs px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-violet-500 resize-y"
               />
             </div>
           </div>
@@ -676,6 +745,44 @@ export const ProfilesScreen: React.FC = () => {
                 value={formScoreThreshold}
                 onChange={(e) => setFormScoreThreshold(Number(e.target.value))}
                 className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-teal-600 mt-2"
+              />
+            </div>
+          </div>
+
+          {/* AI Semantic Matching & Resume */}
+          <div className="p-3.5 bg-violet-50/60 dark:bg-violet-950/20 border border-violet-100 dark:border-violet-900/40 rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                AI Semantic Matching
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit_semantic_enabled"
+                  checked={formSemanticEnabled}
+                  onChange={(e) => setFormSemanticEnabled(e.target.checked)}
+                  className="rounded text-violet-600 focus:ring-violet-500 h-4 w-4 border-slate-300 dark:border-slate-700"
+                />
+                <label
+                  htmlFor="edit_semantic_enabled"
+                  className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+                >
+                  Enable Semantic Ranking
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Candidate Resume / Background Text (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={formResumeText}
+                onChange={(e) => setFormResumeText(e.target.value)}
+                placeholder="Paste summary of experience, projects, skills, and background for local AI semantic embedding comparison..."
+                className="w-full text-xs px-3 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-violet-500 resize-y"
               />
             </div>
           </div>

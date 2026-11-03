@@ -246,7 +246,10 @@ class JobDiscoveryWorker:
             for profile in active_profiles:
                 eval_res = self.filtering_engine.evaluate(job, profile)
                 if eval_res.status in (EligibilityStatus.ELIGIBLE, EligibilityStatus.NEEDS_REVIEW):
-                    score_int = int(round(eval_res.score))
+                    if eval_res.semantic_match is not None:
+                        score_int = int(round(eval_res.semantic_match.blended_score))
+                    else:
+                        score_int = int(round(eval_res.score))
                     outbox_candidates.append(
                         BacklogCandidate(
                             outbox_id=record.id,

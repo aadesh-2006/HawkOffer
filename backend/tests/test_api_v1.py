@@ -771,3 +771,83 @@ async def test_monitoring_unavailable(
         assert (
             await client.post("/api/v1/monitoring/resume?job_name=discovery")
         ).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_semantic_model_system_endpoints(
+    api_client: ApiClientFixture,
+) -> None:
+    client, _ = api_client
+
+    # 1. GET status
+    res = await client.get("/api/v1/system/semantic-model")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["model_name"] == "all-MiniLM-L6-v2"
+    assert data["dimension"] == 384
+    assert "status" in data
+
+    # 2. POST toggle
+    res_toggle = await client.post("/api/v1/system/semantic-model/toggle?enabled=false")
+    assert res_toggle.status_code == 200
+    assert res_toggle.json()["status"] == "DISABLED"
+
+    # Re-enable
+    res_toggle2 = await client.post("/api/v1/system/semantic-model/toggle?enabled=true")
+    assert res_toggle2.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_job_match_endpoint(
+    api_client: ApiClientFixture,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from app.models.preference import PreferenceProfile
+
+    client, _ = api_client
+
+    # 1. Seed Company, Job, and Profile
+    async with session_factory() as session:
+        company = Company(
+            name="Match Tech",
+            career_url="https://boards.greenhouse.io/matchtech",
+            platform="greenhouse",
+            is_active=True,
+        )
+        session.add(company)
+        await session.flush()
+
+        job = Job(
+            company_id=company.id,
+            title="Backend Python Engineer",
+            description="Build scalable distributed APIs with FastAPI, Docker, and SQL.",
+            location="Remote",
+            application_url="https://example.com/apply/backend",
+            fingerprint_hash="m" * 64,
+            content_hash="c" * 64,
+        )
+        profile = PreferenceProfile(
+            name="Python Match",
+            preferred_roles=["Backend Python Engineer"],
+            preferred_skills=["FastAPI", "Docker", "SQL"],
+            resume_text="Senior Python developer with FastAPI and Docker experience.",
+            semantic_enabled=True,
+            is_active=True,
+        )
+        session.add(job)
+        session.add(profile)
+        await session.commit()
+        job_id = job.id
+
+    # 2. Query match endpoint
+    res = await client.get(f"/api/v1/jobs/{job_id}/match")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["job_id"] == job_id
+    assert data["eligibility_status"] == "ELIGIBLE"
+    assert data["deterministic_score"] > 50.0
+    assert data["semantic_score"] is not None
+    assert data["blended_score"] > 0.0
+    assert "FastAPI" in data["shared_skills"] or "fastapi" in [
+        s.lower() for s in data["shared_skills"]
+    ]

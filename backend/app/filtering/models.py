@@ -84,6 +84,9 @@ class EvaluationResult(BaseModel):
     evaluated_at: datetime = Field(
         default_factory=utc_now, description="Timestamp when evaluation was executed"
     )
+    semantic_match: Any | None = Field(
+        default=None, description="Optional local semantic similarity and explainability match"
+    )
 
     @property
     def is_eligible(self) -> bool:

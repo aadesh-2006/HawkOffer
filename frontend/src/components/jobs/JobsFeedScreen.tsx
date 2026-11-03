@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Building2,
   X,
+  Sparkles,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { JobRead, CompanyRead, JobFilterParams } from "../../types/api";
@@ -265,8 +266,19 @@ export const JobsFeedScreen: React.FC = () => {
                       data-testid={`job-row-${job.id}`}
                     >
                       <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-900 dark:text-slate-100 group-hover:text-teal-600 dark:group-hover:text-teal-400 transition-colors">
-                          {job.title}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-900 dark:text-slate-100 group-hover:text-teal-600 dark:group-hover:text-teal-400 transition-colors">
+                            {job.title}
+                          </span>
+                          {job.semantic_score !== undefined && job.semantic_score !== null && (
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300 border border-violet-200 dark:border-violet-800"
+                              title={`Local AI semantic similarity: ${(job.semantic_score * 100).toFixed(1)}%`}
+                            >
+                              <Sparkles className="w-2.5 h-2.5 text-violet-500" />
+                              {Math.round(job.semantic_score * 100)}% fit
+                            </span>
+                          )}
                         </div>
                         {job.department && (
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">

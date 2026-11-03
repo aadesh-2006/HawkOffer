@@ -20,6 +20,8 @@ const { mockJob, mockCompany } = vi.hoisted(() => ({
     graduation_year: 2026,
     posted_at: null,
     status: "ACTIVE",
+    semantic_score: 0.88,
+    match_tier: "EXCELLENT",
     fingerprint_hash: "1".repeat(64),
     content_hash: "2".repeat(64),
     first_seen_at: new Date().toISOString(),
@@ -65,6 +67,20 @@ vi.mock("../services/api", () => ({
       offset: 0,
     }),
     get: vi.fn().mockResolvedValue(mockJob),
+    getMatchDetail: vi.fn().mockResolvedValue({
+      job_id: 42,
+      profile_id: 1,
+      eligibility_status: "ELIGIBLE",
+      deterministic_score: 85,
+      semantic_score: 0.88,
+      blended_score: 86.5,
+      relevance_tier: "EXCELLENT",
+      shared_skills: ["Python", "Distributed Systems"],
+      missing_skills: ["Kubernetes"],
+      is_sparse_description: false,
+      reasons: ["Strong match"],
+      score_breakdown: {},
+    }),
   },
 }));
 
@@ -126,6 +142,31 @@ describe("JobsFeedScreen and JobDetailModal", () => {
       expect(jobsApi.get).toHaveBeenCalledWith(42);
       expect(screen.getByText("Detailed distributed systems responsibilities and qualifications.")).toBeInTheDocument();
       expect(screen.getByText("Apply Now")).toBeInTheDocument();
+    });
+  });
+
+  it("renders semantic fit score and explainable skill breakdown in modal", async () => {
+    render(
+      <AppProvider>
+        <JobsFeedScreen />
+        <JobDetailModal />
+      </AppProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("88% fit")).toBeInTheDocument();
+      expect(screen.getByTestId("btn-inspect-job-42")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("btn-inspect-job-42"));
+
+    await waitFor(() => {
+      expect(jobsApi.getMatchDetail).toHaveBeenCalledWith(42);
+      expect(screen.getByText("Semantic Matching & Fit Analysis")).toBeInTheDocument();
+      expect(screen.getByText("EXCELLENT MATCH")).toBeInTheDocument();
+      expect(screen.getByText("88% Similarity")).toBeInTheDocument();
+      expect(screen.getByText("Distributed Systems")).toBeInTheDocument();
+      expect(screen.getByText("Kubernetes")).toBeInTheDocument();
     });
   });
 });

@@ -65,7 +65,8 @@ def test_check_readiness_healthy(runtime_manager: DesktopRuntimeManager) -> None
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_resp.read.return_value = (
-        b'{"status":"healthy","database":"connected","scheduler":"running","timestamp":"2026-01-01T00:00:00Z"}'
+        b'{"status":"healthy","database":"connected",'
+        b'"scheduler":"running","timestamp":"2026-01-01T00:00:00Z"}'
     )
     mock_resp.__enter__.return_value = mock_resp
 

@@ -306,20 +306,20 @@ flowchart LR
 
 ---
 
-### Milestone 10: AI-Powered Job & Resume Matching (Phase 2)
-- **Focus**: Semantic job scoring, resume parsing, and personalized match recommendations.
+### Milestone 10: Local AI Semantic Resume Matching (COMPLETED)
+- **Status**: Completed / Ready for Review
+- **Focus**: Local sentence embeddings, ONNX CPU inference, zero cloud dependencies, explainable skill matching, and deterministic hard filter precedence.
 - **Tasks**:
-  1. Implement `ResumeParser` to extract skills, experience level, and keywords from local PDF/DOCX resumes.
-  2. Implement local embedding generation (e.g., via `fastembed` or local Ollama instance).
-  3. Calculate cosine similarity between job descriptions and resume profile.
-  4. Display AI match score (0–100%) and key qualifications highlights in the desktop UI.
-  5. Maintain zero cloud dependency (100% local inference).
+  1. Lightweight CPU inference engine using `onnxruntime` + `tokenizers` and `all-MiniLM-L6-v2` (~22MB quantized, 384 dimensions) with deterministic subword hash fallback.
+  2. Database schema extension: `job_embeddings` table with content hash cache invalidation, plus `resume_text` and `semantic_enabled` on `preference_profiles`.
+  3. Integrated deterministic and semantic scoring: hard criteria remain authoritative (`INELIGIBLE` jobs are never promoted); eligible jobs ranked via blended score (`0.55 * deterministic + 0.45 * semantic`).
+  4. Explainability reporting: Shared skills, missing requirements, relevance tier, and sparse description warnings.
+  5. Desktop frontend integration: Header model lifecycle pill, profile modal resume & semantic toggle, jobs feed fit badge, and rich modal semantic analysis breakdown.
+  6. Automated test suites: 314 backend tests passing, 34 frontend tests passing, type safety (`mypy`), and clean lint (`ruff`).
 - **Acceptance Criteria**:
-  - Jobs are ranked by semantic relevance to the founder's resume.
-  - All processing runs locally with zero external API fees or data leakage.
-- **Acceptance Criteria**:
-  - Jobs are ranked by semantic relevance to the founder's resume.
-  - All processing runs locally with zero external API fees or data leakage.
+  - Deterministic filters remain absolute and inviolable.
+  - 100% local CPU inference without PyTorch bloat or external API keys.
+  - Complete explainability breakdown for every evaluated posting.
 
 ---
 

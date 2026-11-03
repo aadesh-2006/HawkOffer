@@ -15,6 +15,7 @@ from app.models.outbox import (
 )
 from app.models.preference import PreferenceProfile
 from app.models.scan_state import CompanyScanState
+from app.models.semantic import JobEmbedding
 
 __all__ = [
     "BacklogStatus",
@@ -22,6 +23,7 @@ __all__ = [
     "CompanyScanState",
     "Job",
     "JobDiscoveryOutbox",
+    "JobEmbedding",
     "MonitoringLog",
     "Notification",
     "NotificationBacklog",

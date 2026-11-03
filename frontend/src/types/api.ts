@@ -128,6 +128,36 @@ export interface JobRead {
   last_seen_at: string;
   created_at: string;
   updated_at: string;
+  semantic_score?: number | null;
+  match_tier?: string | null;
+  shared_skills?: string[] | null;
+  missing_skills?: string[] | null;
+}
+
+export interface JobMatchDetail {
+  job_id: number;
+  profile_id: number;
+  eligibility_status: string;
+  deterministic_score: number;
+  semantic_score?: number | null;
+  blended_score: number;
+  relevance_tier: string;
+  shared_skills: string[];
+  missing_skills: string[];
+  is_sparse_description: boolean;
+  reasons: string[];
+  score_breakdown: Record<string, number>;
+}
+
+export interface ModelStatusInfo {
+  status: "NOT_DOWNLOADED" | "DOWNLOADING" | "READY" | "DISABLED" | "ERROR";
+  model_name: string;
+  model_path?: string | null;
+  dimension: number;
+  is_ready: boolean;
+  is_fallback: boolean;
+  download_progress: number;
+  error_message?: string | null;
 }
 
 export interface JobFilterParams {
@@ -160,6 +190,8 @@ export interface PreferenceProfileRead {
   required_locations: string[];
   require_graduation_year_match: boolean;
   minimum_match_score: number;
+  resume_text?: string | null;
+  semantic_enabled: boolean;
   is_active: boolean;
   revision: number;
   created_at: string;
@@ -182,6 +214,8 @@ export interface PreferenceProfileCreate {
   required_locations?: string[];
   require_graduation_year_match?: boolean;
   minimum_match_score?: number;
+  resume_text?: string | null;
+  semantic_enabled?: boolean;
   is_active?: boolean;
 }
 
@@ -201,6 +235,8 @@ export interface PreferenceProfileUpdate {
   required_locations?: string[] | null;
   require_graduation_year_match?: boolean | null;
   minimum_match_score?: number | null;
+  resume_text?: string | null;
+  semantic_enabled?: boolean | null;
   is_active?: boolean | null;
 }
 

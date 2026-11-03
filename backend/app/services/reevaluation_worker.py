@@ -311,12 +311,17 @@ class ProfileReevaluationWorker:
         for job in jobs:
             res = self.filtering_engine.evaluate(job, profile)
             if res.status == EligibilityStatus.ELIGIBLE:
+                score_val = (
+                    res.semantic_match.blended_score
+                    if res.semantic_match is not None
+                    else res.score
+                )
                 candidates.append(
                     ReevaluationCandidate(
                         job_id=job.id,
                         profile_id=profile.id,
                         profile_revision=profile.revision,
-                        score=int(round(res.score)),
+                        score=int(round(score_val)),
                     )
                 )
         return candidates

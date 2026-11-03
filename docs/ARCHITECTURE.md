@@ -823,3 +823,54 @@ The application runtime is constructed using a factory pattern (`app.main:create
    - Scheduler pause and resume endpoints for individual background worker jobs or target company scans.
    - Rejection reporting when orchestrator is shutting down or unavailable.
 
+---
+
+## 12. Local AI Semantic Job Matching Subsystem (Milestone 10)
+
+Milestone 10 introduces a lightweight, 100% local semantic matching layer that compares user resume and experience profiles with normalized job descriptions, providing explainable relevance rankings while strictly preserving deterministic hard filters.
+
+```mermaid
+flowchart TD
+    Profile["Preference Profile\n(Skills, Roles, Resume Text)"] --> Matcher["SemanticJobMatcher"]
+    Job["Normalized Job\n(Title, Dept, Description)"] --> Embedder["SemanticModelManager\n(ONNX or Fallback Hash)"]
+    Embedder --> JobEmbedding["JobEmbedding Cache\n(content_hash indexed)"]
+    JobEmbedding --> Matcher
+    
+    HardFilter["Deterministic Filter\n(Locations, Exclusions, Cohort)"] --> Gate{"Hard Filter\nEligible?"}
+    Gate -- No --> Ineligible["INELIGIBLE\n(Semantic score never promotes)"]
+    Gate -- Yes --> Blended["Blended Rank Score\n55% Deterministic + 45% Semantic"]
+    
+    Matcher --> Explainability["Explainable Analysis\n• Shared Skills\n• Missing Requirements\n• Relevance Tier\n• Sparse Description Warning"]
+    Blended --> Explainability
+```
+
+### 12.1 Deterministic Precedence Principle
+- **Hard Filter Inviolability**: Hard constraints (location restrictions, excluded title/content keywords, graduation cohort constraints) remain absolute. If a job fails any hard constraint, its status is definitively `INELIGIBLE`.
+- **Zero Semantic Overrides**: Semantic similarity cannot promote an ineligible job into `ELIGIBLE` or `NEEDS_REVIEW`.
+- **Candidate Ranking Formula**: For eligible postings, the final ranking score blends deterministic matching criteria and semantic cosine similarity:
+  $$\text{Blended Score} = 0.55 \times \text{Deterministic Score} + 0.45 \times \text{Semantic Score}$$
+
+### 12.2 Embedding Architecture & Fallback Engine
+- **Target Model**: `sentence-transformers/all-MiniLM-L6-v2` in ONNX format (~22 MB quantized, 384 dimensions).
+- **Inference Runtime**: `onnxruntime` + `tokenizers` running entirely on CPU. Zero PyTorch dependency to prevent multi-gigabyte desktop bundle bloat.
+- **Graceful Deterministic Fallback**: `FallbackEmbeddingService` provides immediate 384-dimensional non-negative feature-hashed subword/n-gram embeddings prior to downloading neural weights, ensuring zero downtime and fully offline operation.
+- **On-Demand Lifecycle**: Model weights are downloaded on demand to `%LOCALAPPDATA%\HawkOffer\HawkOffer\models\all-MiniLM-L6-v2\` with transparent user controls in the application header.
+
+### 12.3 Database Schema & Invalidation Strategy
+- **`job_embeddings` Table**:
+  - `job_id`: Foreign key to `jobs.id` (CASCADE delete).
+  - `model_version`: Identifier of the embedding architecture (`all-MiniLM-L6-v2-onnx-v1` or `deterministic-hash-384-v1`).
+  - `content_hash`: SHA-256 hash of job title, location, department, and description.
+  - `embedding`: JSON-serialized float array (384 dimensions).
+  - Unique constraint on `(job_id, model_version)`.
+- **Automatic Invalidation**: When a monitored job posting updates and changes its `content_hash`, existing cached embeddings are recognized as stale and automatically recomputed.
+- **Profile Revision Invalidation**: Updating `resume_text` or `semantic_enabled` increments the profile revision, supersedes existing backlog items, and enqueues background historical reevaluation.
+
+### 12.4 Explainability & User Experience
+Every match provides full transparency:
+- **Relevance Tier**: Categorized into `Strong Match` ($\ge 70\%$), `Moderate Match` ($\ge 45\%$), or `Low Match` ($< 45\%$).
+- **Shared Skills**: Extracted chips showing overlapping technologies and competencies.
+- **Missing Requirements**: Highlighted skills required by the employer that were not identified in the profile.
+- **Sparse Description Detection**: Flags descriptions under 40 characters with adjusted confidence notes.
+
+

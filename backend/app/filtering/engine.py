@@ -18,7 +18,6 @@ from app.filtering.scoring import (
     match_locations,
     match_skills,
 )
-from app.services.job_normalizer import JobNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +123,8 @@ class JobFilteringEngine:
                     profile.get("require_graduation_year_match", False)
                 ),
                 "minimum_match_score": float(profile.get("minimum_match_score", 0.0) or 0.0),
+                "resume_text": profile.get("resume_text"),
+                "semantic_enabled": bool(profile.get("semantic_enabled", True)),
             }
 
         return {
@@ -153,9 +154,16 @@ class JobFilteringEngine:
                 getattr(profile, "require_graduation_year_match", False)
             ),
             "minimum_match_score": float(getattr(profile, "minimum_match_score", 0.0) or 0.0),
+            "resume_text": getattr(profile, "resume_text", None),
+            "semantic_enabled": bool(getattr(profile, "semantic_enabled", True)),
         }
 
-    def evaluate(self, job: Any, profile: Any) -> EvaluationResult:
+    def evaluate(
+        self,
+        job: Any,
+        profile: Any,
+        embedding_service: Any = None,
+    ) -> EvaluationResult:
         """Evaluate a Job against a PreferenceProfile deterministically and explainably."""
         job_data = self._extract_job_data(job)
         prof_data = self._extract_profile_data(profile)
@@ -369,6 +377,8 @@ class JobFilteringEngine:
         require_grad_match = prof_data["require_graduation_year_match"]
 
         if prof_grad_year is not None:
+            from app.services.job_normalizer import JobNormalizer
+
             # Detect all eligible cohorts mentioned in title or description
             detected_cohorts = set(JobNormalizer.extract_graduation_years(title, description))
             if job_grad_year is not None:
@@ -720,6 +730,38 @@ class JobFilteringEngine:
         else:
             status = EligibilityStatus.ELIGIBLE
 
+        # =========================================================================
+        # Semantic Relevance Evaluation (if enabled)
+        # =========================================================================
+        semantic_res = None
+        if prof_data.get("semantic_enabled", True):
+            try:
+                from app.services.semantic.matcher import SemanticJobMatcher
+                from app.services.semantic.model_manager import SemanticModelManager
+
+                emb_svc = (
+                    embedding_service or SemanticModelManager.get_instance().get_embedding_service()
+                )
+                prof_text = SemanticJobMatcher.build_profile_text(profile)
+                job_text, is_sparse = SemanticJobMatcher.build_job_text(job)
+
+                if prof_text and job_text:
+                    prof_vec = emb_svc.embed_text(prof_text)
+                    job_vec = emb_svc.embed_text(job_text)
+
+                    semantic_res = SemanticJobMatcher.evaluate_match(
+                        job_embedding=job_vec,
+                        profile_embedding=prof_vec,
+                        deterministic_score=final_score,
+                        deterministic_status=status,
+                        preferred_skills=prof_data["preferred_skills"],
+                        job_text=job_text,
+                        is_sparse=is_sparse,
+                        model_version=emb_svc.model_version,
+                    )
+            except Exception as sem_err:
+                logger.debug("Semantic matching evaluation skipped: %s", sem_err)
+
         return EvaluationResult(
             job_id=job_data["id"],
             profile_id=prof_data["id"],
@@ -730,8 +772,14 @@ class JobFilteringEngine:
             unknown_criteria=unknown_criteria,
             score_breakdown=score_breakdown,
             evaluated_at=utc_now(),
+            semantic_match=semantic_res,
         )
 
-    def evaluate_batch(self, jobs: list[Any], profile: Any) -> list[EvaluationResult]:
+    def evaluate_batch(
+        self,
+        jobs: list[Any],
+        profile: Any,
+        embedding_service: Any = None,
+    ) -> list[EvaluationResult]:
         """Evaluate a batch of jobs against a preference profile."""
-        return [self.evaluate(job, profile) for job in jobs]
+        return [self.evaluate(job, profile, embedding_service=embedding_service) for job in jobs]

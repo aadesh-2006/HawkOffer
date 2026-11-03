@@ -36,6 +36,8 @@ FILTERING_PREFERENCE_FIELDS: set[str] = {
     "required_locations",
     "require_graduation_year_match",
     "minimum_match_score",
+    "resume_text",
+    "semantic_enabled",
 }
 
 
