@@ -216,3 +216,33 @@ def test_docker_entrypoint_script_wait_for_db() -> None:
     content = entrypoint_path.read_text(encoding="utf-8")
     assert "app.database.wait_for_db" in content
     assert 'exec "$@"' in content
+
+
+def test_smoke_test_runner_url_derivation_and_recording() -> None:
+    """Verify SmokeTestRunner normalizes URLs and records structured test outcomes."""
+    import sys
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from scripts.smoke_test import SmokeTestRunner
+
+    # 1. Test URL derivation
+    r1 = SmokeTestRunner(api_url="https://api.hawkoffer.app/api/v1", web_url="https://hawkoffer.pages.dev/")
+    assert r1.api_url == "https://api.hawkoffer.app/api/v1"
+    assert r1.root_url == "https://api.hawkoffer.app"
+    assert r1.web_url == "https://hawkoffer.pages.dev"
+
+    r2 = SmokeTestRunner(api_url="https://api.hawkoffer.app")
+    assert r2.api_url == "https://api.hawkoffer.app/api/v1"
+    assert r2.root_url == "https://api.hawkoffer.app"
+    assert r2.web_url is None
+
+    # 2. Test record and summary logic
+    r1.record("Test Step 1", "GET /test", "PASS", "HTTP 200", 12.5)
+    r1.record("Test Step 2", "POST /test", "SKIP", "Not configured", 0.0)
+    assert len(r1.results) == 2
+    assert r1.print_summary() is True
+
+    r1.record("Test Step 3", "DELETE /test", "FAIL", "HTTP 500", 50.0)
+    assert r1.print_summary() is False
