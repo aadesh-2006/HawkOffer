@@ -66,14 +66,21 @@ def test_validate_production_configuration() -> None:
         env="production",
         cron_secret="insecure",
         jwt_secret_key="short",
+        auth_required=False,
     )
     errors = s_insecure.validate_production_configuration()
-    assert len(errors) == 2
+    assert len(errors) == 4
+    assert any("JWT_SECRET_KEY" in e for e in errors)
+    assert any("CRON_SECRET" in e for e in errors)
+    assert any("AUTH_REQUIRED" in e for e in errors)
+    assert any("DATABASE_URL" in e for e in errors)
 
     s_secure = Settings(
         env="production",
         cron_secret="c" * 32,
         jwt_secret_key="j" * 32,
+        auth_required=True,
+        database_url="postgresql+asyncpg://user:pass@localhost:5432/hawkoffer",
         cors_origins=["https://hawkoffer.pages.dev"],
     )
     errors = s_secure.validate_production_configuration()

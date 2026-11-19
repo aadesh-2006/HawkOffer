@@ -316,9 +316,23 @@ class Settings(BaseSettings):
             cleaned = raw_url.strip()
             # SQLite URLs: maintain raw file/memory paths without encoding colons or slashes
             if cleaned.startswith("sqlite://"):
+                if self.is_production:
+                    raise ValueError(
+                        "SQLite is not permitted in production; "
+                        "a PostgreSQL database URL is required."
+                    )
                 return cleaned.replace("sqlite://", "sqlite+aiosqlite://", 1)
             if cleaned.startswith("sqlite+aiosqlite://"):
+                if self.is_production:
+                    raise ValueError(
+                        "SQLite is not permitted in production; "
+                        "a PostgreSQL database URL is required."
+                    )
                 return cleaned
+            if self.is_production and ":memory:" in cleaned:
+                raise ValueError(
+                    "SQLite is not permitted in production; a PostgreSQL database URL is required."
+                )
 
             # Restrict credential repair strictly to the authority/user-info section.
             # Assumptions & Guarantees:
@@ -399,7 +413,19 @@ class Settings(BaseSettings):
                 url_obj = url_obj.set(drivername="postgresql+asyncpg", query=query_dict)
                 return url_obj.render_as_string(hide_password=False)
 
+            if self.is_production:
+                safe_url = redact_db_url(cleaned)
+                raise ValueError(
+                    f"Unsupported database scheme in production: {safe_url}. "
+                    "A PostgreSQL database URL is required."
+                )
             return cleaned
+
+        if self.is_production:
+            raise ValueError(
+                "HAWKOFFER_DATABASE_URL (or DATABASE_URL) is not configured; "
+                "production requires a PostgreSQL database URL."
+            )
 
         db_path = self.get_data_dir(create=False) / "hawkoffer.db"
         # Always use forward slashes for SQLite URLs across all OSes
@@ -486,6 +512,62 @@ class Settings(BaseSettings):
             return False, "HAWKOFFER_JWT_SECRET_KEY must be at least 32 characters in production"
         return True, "Valid"
 
+    def validate_production_auth(self) -> tuple[bool, str]:
+        """Validate whether authentication is enforced in production.
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        if not self.auth_required:
+            return False, "HAWKOFFER_AUTH_REQUIRED must be set to 'true' in production"
+        return True, "Valid"
+
+    def validate_production_database(self) -> tuple[bool, str]:
+        """Validate whether a valid PostgreSQL database URL is configured for production.
+
+        SQLite and missing database URLs are strictly rejected in production.
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        raw_url = self.database_url or os.environ.get("DATABASE_URL")
+        if not raw_url or not str(raw_url).strip():
+            return (
+                False,
+                "HAWKOFFER_DATABASE_URL is not configured; "
+                "production requires a PostgreSQL database URL",
+            )
+
+        cleaned = str(raw_url).strip()
+        if (
+            cleaned.startswith(("sqlite://", "sqlite+aiosqlite://"))
+            or ":memory:" in cleaned
+        ):
+            return (
+                False,
+                "SQLite is not permitted in production; a PostgreSQL database URL is required",
+            )
+
+        try:
+            resolved_url = self.get_database_url()
+        except ValueError as exc:
+            safe_reason = sanitize_exception_text(exc)
+            return False, safe_reason
+        except Exception as exc:
+            safe_reason = sanitize_exception_text(exc)
+            return False, f"Invalid database configuration: {safe_reason}"
+
+        if resolved_url.startswith(("sqlite://", "sqlite+aiosqlite://")):
+            return (
+                False,
+                "SQLite is not permitted in production; a PostgreSQL database URL is required",
+            )
+
+        if not resolved_url.startswith(("postgresql://", "postgresql+asyncpg://")):
+            return False, "HAWKOFFER_DATABASE_URL must be a PostgreSQL connection string"
+
+        return True, "Valid"
+
     def validate_production_configuration(self) -> list[str]:
         """Validate all critical production settings. Returns list of error reasons."""
         errors: list[str] = []
@@ -495,6 +577,12 @@ class Settings(BaseSettings):
         is_cron_valid, cron_reason = self.validate_production_cron_secret()
         if not is_cron_valid:
             errors.append(cron_reason)
+        is_auth_valid, auth_reason = self.validate_production_auth()
+        if not is_auth_valid:
+            errors.append(auth_reason)
+        is_db_valid, db_reason = self.validate_production_database()
+        if not is_db_valid:
+            errors.append(db_reason)
         for origin in self.get_cors_origins():
             if origin == "*":
                 errors.append("Wildcard '*' CORS origin is not permitted with credentials")
