@@ -22,6 +22,62 @@ export interface ToastMessage {
   type: "success" | "error" | "info";
 }
 
+export function getTabFromPathname(pathname: string): TabId {
+  const clean = pathname.toLowerCase().replace(/\/+$/, "");
+  switch (clean) {
+    case "/jobs":
+      return "jobs";
+    case "/companies":
+      return "companies";
+    case "/tracker":
+    case "/applications":
+      return "applications";
+    case "/profiles":
+      return "profiles";
+    case "/notifications":
+      return "notifications";
+    case "/monitoring":
+      return "monitoring";
+    case "/settings":
+      return "settings";
+    case "/dashboard":
+    case "":
+    case "/":
+    default:
+      return "dashboard";
+  }
+}
+
+export function getPathFromTab(tab: TabId): string {
+  switch (tab) {
+    case "applications":
+      return "/tracker";
+    case "dashboard":
+      return "/";
+    default:
+      return `/${tab}`;
+  }
+}
+
+export const KNOWN_PATHS = new Set([
+  "",
+  "/",
+  "/dashboard",
+  "/jobs",
+  "/companies",
+  "/tracker",
+  "/applications",
+  "/profiles",
+  "/notifications",
+  "/monitoring",
+  "/settings",
+]);
+
+export function isKnownPath(pathname: string): boolean {
+  const clean = pathname.toLowerCase().replace(/\/+$/, "");
+  return KNOWN_PATHS.has(clean);
+}
+
 interface AppContextValue {
   // Navigation
   activeTab: TabId;
@@ -64,7 +120,41 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [activeTab, setActiveTabState] = useState<TabId>(() => {
+    if (typeof window !== "undefined" && window.location && window.location.pathname) {
+      const pathname = window.location.pathname;
+      if (!isKnownPath(pathname) && window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", "/");
+      }
+      return getTabFromPathname(pathname);
+    }
+    return "dashboard";
+  });
+
+  const setActiveTab = useCallback((tab: TabId) => {
+    setActiveTabState(tab);
+    if (typeof window !== "undefined" && window.history) {
+      const targetPath = getPathFromTab(tab);
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState(null, "", targetPath);
+      }
+    }
+  }, []);
+
+  // Sync state when browser navigation happens (back / forward buttons)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePopState = () => {
+      const pathname = window.location.pathname;
+      if (!isKnownPath(pathname) && window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", "/");
+      }
+      setActiveTabState(getTabFromPathname(pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   const [theme, setThemeState] = useState<Theme>(() => {
     return (localStorage.getItem("hawkoffer_theme") as Theme) || "system";
   });

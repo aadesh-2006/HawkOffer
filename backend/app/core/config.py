@@ -1,11 +1,15 @@
 """Application configuration module for HawkOffer."""
 
+import os
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from platformdirs import user_data_dir
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 KNOWN_INSECURE_CRON_SECRETS: frozenset[str] = frozenset({
     "hawkoffer-dev-cron-secret-token",
@@ -17,6 +21,186 @@ KNOWN_INSECURE_CRON_SECRETS: frozenset[str] = frozenset({
     "12345678",
     "cron-secret",
 })
+
+SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset({
+    "password",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "private_key",
+    "key",
+})
+
+
+def redact_db_url(url: str) -> str:
+    """Safely redact credentials and sensitive query parameters from a database URL.
+
+    - Isolates authority, path, query, and fragment before checking for userinfo delimiters.
+    - Masks username and password as '***:***@<host>' without exposing either.
+    - URL-decodes query parameter names before matching against sensitive keys.
+    - Redacts sensitive query parameters (password, token, secret, api_key, etc.).
+    - Preserves non-sensitive query parameters (e.g. sslmode, application_name) for diagnostics.
+    - Redacts URL fragments to prevent token/secret exposure.
+    - Never raises an exception on malformed or unexpected input strings.
+    """
+    if not url:
+        return ""
+    try:
+        url_str = str(url).strip()
+        if not url_str:
+            return ""
+
+        # 1. Scheme isolation
+        if "://" in url_str:
+            scheme_prefix, _, remainder = url_str.partition("://")
+            scheme = scheme_prefix + "://"
+        else:
+            scheme = ""
+            remainder = url_str
+
+        # 2. Fragment isolation: mask fragment content to prevent token leakage
+        fragment = ""
+        if "#" in remainder:
+            remainder, _, frag_content = remainder.partition("#")
+            fragment = "#***" if frag_content else "#"
+
+        # 3. Query string isolation and sensitive parameter redaction
+        query_str = ""
+        if "?" in remainder:
+            remainder, _, query_content = remainder.partition("?")
+            if query_content:
+                redacted_params = []
+                for param in query_content.split("&"):
+                    if not param:
+                        continue
+                    if "=" in param:
+                        k, v = param.split("=", 1)
+                        k_norm = unquote(k).lower().replace("-", "_").strip()
+                        is_sensitive = (
+                            k_norm in SENSITIVE_QUERY_KEYS
+                            or any(
+                                s in k_norm
+                                for s in (
+                                    "password",
+                                    "token",
+                                    "secret",
+                                    "api_key",
+                                    "access_token",
+                                    "refresh_token",
+                                )
+                            )
+                        )
+                        if is_sensitive:
+                            redacted_params.append(f"{k}=***")
+                        else:
+                            redacted_params.append(f"{k}={v}")
+                    else:
+                        k_norm = unquote(param).lower().replace("-", "_").strip()
+                        is_sensitive = (
+                            k_norm in SENSITIVE_QUERY_KEYS
+                            or any(
+                                s in k_norm
+                                for s in (
+                                    "password",
+                                    "token",
+                                    "secret",
+                                    "api_key",
+                                    "access_token",
+                                    "refresh_token",
+                                )
+                            )
+                        )
+                        if is_sensitive:
+                            redacted_params.append(f"{param}=***")
+                        else:
+                            redacted_params.append(param)
+                query_str = "?" + "&".join(redacted_params)
+            else:
+                query_str = "?"
+
+        # 4. Path and Authority isolation: delimited by the first occurrence of '/'
+        if "/" in remainder:
+            authority, _, path = remainder.partition("/")
+            path_str = "/" + path
+        else:
+            authority = remainder
+            path_str = ""
+
+        # 5. User-info redaction strictly within the isolated authority component
+        if "@" in authority:
+            _, host_port = authority.rsplit("@", 1)
+            authority = f"***:***@{host_port}"
+
+        return f"{scheme}{authority}{path_str}{query_str}{fragment}"
+    except Exception:
+        return "***:***@<redacted>"
+
+
+def sanitize_exception_text(exc: object) -> str:
+    """Sanitize arbitrary exception text or messages so no credentials or secrets leak.
+
+    - Never conditionally skips redaction based on '@'.
+    - Finds and redacts full database URLs embedded in the exception text.
+    - Redacts sensitive query-parameter or key-value pairs (password, token, secret, api_key, etc.),
+      including URL-encoded variants (e.g. %74oken=secret).
+    - Masks any raw user:password@ credentials.
+    - Never raises an exception itself; falls back safely to the exception class name.
+    """
+    if exc is None:
+        return ""
+    try:
+        raw_text = str(exc)
+        if not raw_text:
+            return ""
+
+        # 1. If text contains a URL (scheme://...), redact the embedded URL(s)
+        def _replace_url(match: re.Match[str]) -> str:
+            return redact_db_url(match.group(0))
+
+        sanitized = re.sub(r"[a-zA-Z0-9+.-]+://[^\s\'\",;()]+", _replace_url, raw_text)
+
+        # 2. Redact sensitive key-value pairs even if standalone in the message
+        def _replace_sensitive_kv(match: re.Match[str]) -> str:
+            k = match.group(1)
+            sep = match.group(2)
+            k_norm = unquote(k).lower().replace("-", "_").strip()
+            is_sensitive = (
+                k_norm in SENSITIVE_QUERY_KEYS
+                or any(
+                    s in k_norm
+                    for s in (
+                        "password",
+                        "token",
+                        "secret",
+                        "api_key",
+                        "access_token",
+                        "refresh_token",
+                    )
+                )
+            )
+            if is_sensitive:
+                return f"{k}{sep}***"
+            return match.group(0)
+
+        sanitized = re.sub(
+            r"([a-zA-Z0-9_%-]+)(=|:\s*)([^\s&\'\",;#]+)",
+            _replace_sensitive_kv,
+            sanitized,
+        )
+
+        # 3. Mask any remaining user:pass@ patterns in the text
+        sanitized = re.sub(r"(?:[^\s/@:]+):(?:[^\s/@:]+)@([^\s/@:]+)", r"***:***@\1", sanitized)
+
+        return sanitized
+    except Exception:
+        try:
+            return type(exc).__name__
+        except Exception:
+            return "DatabaseConfigurationError"
 
 
 class Settings(BaseSettings):
@@ -127,14 +311,95 @@ class Settings(BaseSettings):
 
     def get_database_url(self) -> str:
         """Resolve the async database URL (SQLite or PostgreSQL)."""
-        if self.database_url:
-            url = self.database_url.strip()
-            # Normalize PostgreSQL prefixes for asyncpg
-            if url.startswith("postgres://"):
-                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-            elif url.startswith("postgresql://") and "+asyncpg" not in url:
-                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-            return url
+        raw_url = self.database_url or os.environ.get("DATABASE_URL")
+        if raw_url:
+            cleaned = raw_url.strip()
+            # SQLite URLs: maintain raw file/memory paths without encoding colons or slashes
+            if cleaned.startswith("sqlite://"):
+                return cleaned.replace("sqlite://", "sqlite+aiosqlite://", 1)
+            if cleaned.startswith("sqlite+aiosqlite://"):
+                return cleaned
+
+            # Restrict credential repair strictly to the authority/user-info section.
+            # Assumptions & Guarantees:
+            # 1. Authority isolation: Delimited by '://' and the first occurrence of '/',
+            #    '?', or '#'. URL query parameters (e.g. application_name=hawk@offer) and
+            #    paths are never inspected or altered by credential repair.
+            # 2. User-host delimiter: In authority.rsplit("@", 1), the rightmost '@' character
+            #    in the authority section is assumed to separate user-info from host:port.
+            # 3. User-password delimiter: The first ':' separates username from password.
+            # 4. Username integrity: Usernames must not contain unencoded '@' characters.
+            #    If an unencoded '@' appears in the username, the authority is ambiguous
+            #    and raises ValueError.
+            # 5. Password repair: Literal '@' characters inside the password component are
+            #    assumed to be unencoded password characters and safely converted to '%40'
+            #    without altering the host. Pre-encoded passwords (%40) contain only a single
+            #    '@' delimiter, so no rewriting occurs.
+            if "://" in cleaned:
+                prefix, sep, remainder = cleaned.partition("://")
+                # Authority is delimited by the first occurrence of '/', '?', or '#'
+                end_delims = [remainder.find(d) for d in ("/", "?", "#") if d in remainder]
+                auth_end = min(end_delims) if end_delims else len(remainder)
+                authority = remainder[:auth_end]
+                suffix = remainder[auth_end:]
+
+                # Only repair if the authority component itself has multiple '@' signs
+                if authority.count("@") > 1:
+                    userinfo, host_port = authority.rsplit("@", 1)
+                    if ":" not in userinfo:
+                        raise ValueError(
+                            "Ambiguous database credentials in authority: multiple '@' characters "
+                            "found without a valid 'user:password' separator. "
+                            "Please URL-encode credentials."
+                        )
+                    user, password = userinfo.split(":", 1)
+                    if "@" in user:
+                        raise ValueError(
+                            "Ambiguous database credentials: username contains an unencoded '@' "
+                            "character. Please URL-encode credentials "
+                            "(e.g. replace '@' with '%40')."
+                        )
+                    password = password.replace("@", "%40")
+                    authority = f"{user}:{password}@{host_port}"
+                    cleaned = f"{prefix}://{authority}{suffix}"
+
+            # PostgreSQL URL handling: parse and normalize via SQLAlchemy make_url.
+            # Supported schemes: postgres://, postgresql://, postgresql+asyncpg://
+            is_pg_scheme = cleaned.startswith(
+                ("postgres://", "postgresql://", "postgresql+asyncpg://")
+            )
+
+            try:
+                url_obj = make_url(cleaned)
+            except Exception as exc:
+                if is_pg_scheme:
+                    safe_url = redact_db_url(cleaned)
+                    safe_exc = sanitize_exception_text(exc)
+                    raise ValueError(
+                        f"Invalid or malformed PostgreSQL database URL: {safe_url}. "
+                        f"Could not parse database connection string: {safe_exc}"
+                    ) from exc
+                raise
+
+            driver = url_obj.drivername
+            if is_pg_scheme or driver.startswith(("postgres", "postgresql")):
+                # Require host or database name for PostgreSQL connection strings
+                if not url_obj.host and not url_obj.database:
+                    safe_url = redact_db_url(cleaned)
+                    raise ValueError(
+                        f"Invalid or malformed PostgreSQL database URL: {safe_url}. "
+                        "Host or database name is required."
+                    )
+                query_dict = dict(url_obj.query)
+                # Translate sslmode to ssl for asyncpg driver compatibility
+                if "sslmode" in query_dict:
+                    ssl_val = query_dict.pop("sslmode")
+                    if "ssl" not in query_dict:
+                        query_dict["ssl"] = ssl_val
+                url_obj = url_obj.set(drivername="postgresql+asyncpg", query=query_dict)
+                return url_obj.render_as_string(hide_password=False)
+
+            return cleaned
 
         db_path = self.get_data_dir(create=False) / "hawkoffer.db"
         # Always use forward slashes for SQLite URLs across all OSes
@@ -142,10 +407,28 @@ class Settings(BaseSettings):
         return f"sqlite+aiosqlite:///{clean_path}"
 
     def get_sync_database_url(self) -> str:
-        """Resolve a synchronous database URL for Alembic migrations."""
+        """Resolve a synchronous database URL for Alembic migrations or sync utilities."""
         async_url = self.get_database_url()
         if async_url.startswith("sqlite+aiosqlite:///"):
             return async_url.replace("sqlite+aiosqlite:///", "sqlite:///")
+        if async_url.startswith("sqlite:///"):
+            return async_url
+
+        try:
+            url_obj = make_url(async_url)
+            driver = url_obj.drivername
+            if driver.startswith(("postgres", "postgresql")):
+                query_dict = dict(url_obj.query)
+                # Convert ssl query parameter to sslmode for synchronous drivers
+                if "ssl" in query_dict:
+                    ssl_val = query_dict.pop("ssl")
+                    if "sslmode" not in query_dict:
+                        query_dict["sslmode"] = ssl_val
+                url_obj = url_obj.set(drivername="postgresql", query=query_dict)
+                return url_obj.render_as_string(hide_password=False)
+        except Exception:
+            pass
+
         if async_url.startswith("postgresql+asyncpg://"):
             return async_url.replace("postgresql+asyncpg://", "postgresql://", 1)
         if async_url.startswith("postgres://"):

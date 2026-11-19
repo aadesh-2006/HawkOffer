@@ -14,19 +14,15 @@ import time
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.config import settings
+from app.core.config import redact_db_url, settings
+from app.database.session import is_transaction_pooler_url
 
 logger = logging.getLogger("wait_for_db")
 
 
 def sanitize_db_url_for_logging(url: str) -> str:
-    """Mask credentials in database URL for safe diagnostic logging."""
-    if "@" in url:
-        # url format: scheme://user:password@host:port/dbname
-        scheme_prefix = url.split("://")[0] + "://" if "://" in url else ""
-        host_and_db = url.split("@")[-1]
-        return f"{scheme_prefix}***:***@{host_and_db}"
-    return url
+    """Mask credentials (both username and password) in database URL for safe logging."""
+    return redact_db_url(url)
 
 
 async def wait_for_database(
@@ -57,7 +53,11 @@ async def wait_for_database(
         timeout_seconds,
     )
 
-    engine = create_async_engine(db_url, pool_pre_ping=True)
+    connect_args: dict[str, object] = {}
+    if is_transaction_pooler_url(db_url):
+        connect_args["statement_cache_size"] = 0
+
+    engine = create_async_engine(db_url, pool_pre_ping=True, connect_args=connect_args)
     start_time = time.monotonic()
 
     try:

@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -15,6 +16,27 @@ from app.core.config import settings
 from app.database.base import Base
 
 logger = logging.getLogger(__name__)
+
+
+def is_transaction_pooler_url(url: str) -> bool:
+    """Detect whether a database URL targets a PgBouncer / transaction pooler.
+
+    Supabase transaction pooler (port 6543) or connections specifying pgbouncer=true /
+    pool_mode=transaction require statement_cache_size=0 because prepared statements are
+    not preserved across pooled transactions. Supabase session pooler (port 5432) and
+    direct PostgreSQL connections maintain session state and do not require this.
+    """
+    try:
+        url_obj = make_url(url)
+        if url_obj.port == 6543:
+            return True
+        query = url_obj.query
+        if query.get("pgbouncer") in ("true", "1") or query.get("pool_mode") == "transaction":
+            return True
+    except Exception:
+        if ":6543" in url:
+            return True
+    return False
 
 
 def create_engine_instance(db_url: str | None = None, echo: bool | None = None) -> AsyncEngine:
@@ -33,6 +55,11 @@ def create_engine_instance(db_url: str | None = None, echo: bool | None = None) 
         engine_kwargs["max_overflow"] = settings.db_max_overflow
         engine_kwargs["pool_recycle"] = settings.db_pool_recycle
         engine_kwargs["pool_pre_ping"] = settings.db_pool_pre_ping
+
+        # PgBouncer transaction poolers (such as Supabase port 6543)
+        # require disabling prepared statement caches
+        if is_transaction_pooler_url(url):
+            engine_kwargs["connect_args"] = {"statement_cache_size": 0}
 
     engine = create_async_engine(
         url,
